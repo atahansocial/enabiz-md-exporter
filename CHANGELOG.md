@@ -2,6 +2,12 @@
 
 Bu proje [SemVer](https://semver.org/) sürümleme kurallarını takip eder.
 
+## [1.2.1] - 2026-11-24
+
+### Arayüz
+- **Uygulama ikonu yenilendi**: 16/48/128 px simgeler artık Google Material Design Icons setindeki `health_and_safety` ikonundan üretiliyor (marka kırmızısı zemin + beyaz glif). Kaynak ve lisans bilgisi `icons/README.txt` içinde.
+- **Ayarlar açılır oku**: Metin karakteri (`▾`) yerine Material Design `expand_more` SVG ikonu kullanılıyor; açık/kapalı durumda 180 derece dönüyor.
+
 ## [1.2.0] - 2026-11-24
 
 ### Yeni Özellik

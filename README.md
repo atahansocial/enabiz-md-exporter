@@ -125,3 +125,5 @@ src/content.js ──(IPC + PDF chunk stream)──► src/sidepanel.js
 ## Lisans
 
 Bu proje [MIT Lisansı](LICENSE) ile lisanslanmıştır.
+
+Arayüz ve uygulama ikonları [Google Material Design Icons](https://github.com/google/material-design-icons) setinden türetilmiştir (Apache License 2.0). Ayrıntılar: [icons/README.txt](icons/README.txt).
