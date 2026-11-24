@@ -224,6 +224,8 @@ const withHistory = {
 const currentPlan = enumerateWorkItem(withHistory, { index: 0, seenStudyUids: seenUids });
 assert.equal(currentPlan.studies.length, 1);
 assert.equal(currentPlan.studies[0].studyUid, 'cur-study');
+assert.equal(seenUids.has('cur-study'), false); // enumerateWorkItem does not mutate seenStudyUids before download succeeds
+seenUids.add(currentPlan.studies[0].studyUid);
 const dupStudyPlan = enumerateWorkItem(withHistory, { index: 1, seenStudyUids: seenUids });
 assert.equal(dupStudyPlan.studies.length, 0);
 

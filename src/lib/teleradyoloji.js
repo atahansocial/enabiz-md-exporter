@@ -156,11 +156,8 @@ export function enumerateWorkItem(workItem, meta = {}, origin = TELERADYOLOJI_OR
       warnings.push(`${studyDesc}: çalışma kimliği (StudyInstanceUID) yok, görüntüler atlandı.`);
       return;
     }
-    if (meta.seenStudyUids instanceof Set) {
-      if (meta.seenStudyUids.has(studyUid)) {
-        return;
-      }
-      meta.seenStudyUids.add(studyUid);
+    if (meta.seenStudyUids instanceof Set && meta.seenStudyUids.has(studyUid)) {
+      return;
     }
     if (!wadoBase) {
       warnings.push(`${studyDesc}: WADO adresi yok, görüntüler atlandı.`);

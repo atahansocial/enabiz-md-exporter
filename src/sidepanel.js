@@ -387,6 +387,7 @@ async function ensureRadImageTab() {
   }
   const tab = await chrome.tabs.create({ url: TELERADYOLOJI_VIEWER_URL, active: false });
   radImageTabId = tab.id;
+  await chrome.tabs.update(tab.id, { autoDiscardable: false }).catch(() => {});
   await waitForTabReady(radImageTabId);
   const current = await chrome.tabs.get(radImageTabId);
   if (!current?.url || !current.url.startsWith(TELERADYOLOJI_ORIGIN)) {
@@ -507,33 +508,56 @@ async function downloadRadiologyImages(runId, rawData, options = {}) {
 
       const bytesBefore = stats.bytes;
       const framesBefore = stats.frameCount;
-      const jobId = `rad-${runId}-${index}-${Date.now()}`;
-      activeRadJobId = jobId;
-      updateProgressUI(
-        Math.max(1, activeTotalStages - 1),
-        activeTotalStages,
-        `Radyoloji görüntüleri indiriliyor: ${record.aciklama || ''} (0/${items.length})`
-      );
+      const filesBefore = runRadImageFiles.length;
+      const pathStem = (p) => String(p || '').replace(/\.(jpg|jpeg|dcm)$/i, '');
 
       let download = null;
-      try {
-        resetWatchdog(runId);
-        const tabId = await ensureRadImageTab();
-        download = await runInTeleradyolojiTab(tabId, radiologyPageDownload, [
-          {
-            runId,
-            jobId,
-            items,
-            token: auth.token,
-            concurrency: speedCfg.concurrency,
-            delayMs: speedCfg.delayMs
-          }
-        ]);
-      } catch (err) {
-        stats.errors.push(`${label(record)}: görüntü indirme hatası (${(err && err.message) || err}).`);
-      } finally {
-        activeRadJobId = null;
-        radChunkBuffers.clear();
+      let downloadErr = null;
+      let attempt = 0;
+      while (attempt < 2 && runId === currentRunId) {
+        const savedStems = new Set(runRadImageFiles.slice(filesBefore).map((f) => pathStem(f.path)));
+        const pendingItems = attempt === 0 ? items : items.filter((it) => !savedStems.has(pathStem(it.path)));
+        if (pendingItems.length === 0) {
+          download = { ok: true, done: savedStems.size, failed: 0, cancelled: false };
+          downloadErr = null;
+          break;
+        }
+        const jobId = `rad-${runId}-${index}-${attempt}-${Date.now()}`;
+        activeRadJobId = jobId;
+        updateProgressUI(
+          Math.max(1, activeTotalStages - 1),
+          activeTotalStages,
+          attempt === 0
+            ? `Radyoloji görüntüleri indiriliyor: ${record.aciklama || ''} (0/${pendingItems.length})`
+            : `Radyoloji sekmesi yenileniyor, kalan kesitler (${pendingItems.length}): ${record.aciklama || ''}`
+        );
+
+        try {
+          resetWatchdog(runId);
+          const tabId = await ensureRadImageTab();
+          download = await runInTeleradyolojiTab(tabId, radiologyPageDownload, [
+            {
+              runId,
+              jobId,
+              items: pendingItems,
+              token: auth.token,
+              concurrency: speedCfg.concurrency,
+              delayMs: speedCfg.delayMs
+            }
+          ]);
+          downloadErr = null;
+          break;
+        } catch (err) {
+          downloadErr = err;
+        } finally {
+          activeRadJobId = null;
+          radChunkBuffers.clear();
+        }
+        attempt += 1;
+      }
+
+      if (downloadErr) {
+        stats.errors.push(`${label(record)}: görüntü indirme hatası (${(downloadErr && downloadErr.message) || downloadErr}).`);
       }
 
       if (runId !== currentRunId) return;
@@ -552,11 +576,16 @@ async function downloadRadiologyImages(runId, rawData, options = {}) {
           bytes: stats.bytes - bytesBefore,
           failed: download?.failed || 0
         };
+        if (!downloadErr && !(download?.failed > 0)) {
+          for (const st of plan.studies) {
+            if (st.studyUid) seenStudyUids.add(st.studyUid);
+          }
+        }
       } else if (download?.abortedEarly) {
         stats.errors.push(
           `${label(record)}: sunucudan görüntü alınamadı (${download.firstError || 'bağlantı hatası'}), kalan kesitler atlandı.`
         );
-      } else if (!download) {
+      } else if (!download && !downloadErr) {
         stats.errors.push(`${label(record)}: hiç görüntü indirilemedi.`);
       }
       if (download?.cancelled && !download?.abortedEarly) return;

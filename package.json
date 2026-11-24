@@ -1,6 +1,6 @@
 {
   "name": "enabiz-md-exporter",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "private": true,
   "description": "e-Nabiz saglik gecmisini yerel olarak Markdown ve ZIP arsivine donusturen Chrome eklentisi",
   "type": "module",

@@ -2,6 +2,12 @@
 
 Bu proje [SemVer](https://semver.org/) sürümleme kurallarını takip eder.
 
+## [1.4.2] - 2026-11-24
+
+### Güvenilirlik
+- **Arka Plan Sekme Kapanmasına Karşı Koruma (`src/sidepanel.js`)**: Geçici Teleradyoloji sekmesi `autoDiscardable: false` ile işaretlenir; böylece Chrome Bellek Tasarrufu uzun indirmeler sırasında sekmeyi kapatmaz.
+- **Kesintide Otomatik Devam (`src/sidepanel.js`, `src/lib/teleradyoloji.js`)**: Sekme çalışma ortasında kapanır/sıfırlanırsa (`Frame with ID 0 was removed.` vb.) kalan kesitler yeni açılan sekmeden otomatik devam ettirilir; `seenStudyUids` yalnızca tamamen başarılı inen çalışmalar için işaretlenir.
+
 ## [1.4.1] - 2026-11-24
 
 ### Kritik Hata Düzeltmesi ve Hızlandırma (Radyoloji WADO)
