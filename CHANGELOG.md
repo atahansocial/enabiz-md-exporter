@@ -2,6 +2,18 @@
 
 Bu proje [SemVer](https://semver.org/) sürümleme kurallarını takip eder.
 
+## [1.3.1] - 2026-11-24
+
+### Düzeltmeler & İyileştirmeler
+- **Radyoloji İndirmesi Varsayılan Kapalı (`src/sidepanel.html`)**: "Radyoloji görüntülerini de indir" seçeneği artık varsayılan olarak kapalıdır; yalnızca kullanıcı istediğinde GB seviyesinde görsel indirimi başlatılır.
+- **Sıkıştırılmış Dosyalarda ZIP Hız Optimizasyonu (`src/lib/zip.js`)**: `.jpg`, `.jpeg`, `.png`, `.webp`, `.gif`, `.zip`, `.gz` ve `.pdf` dosyaları gereksiz deflate denemesi yapılmadan doğrudan `STORE` (yöntem `0`) ile paketlenir.
+- **WADO Origin & Çoklu Çalışma Klasörleri (`src/lib/teleradyoloji.js`, `src/sidepanel.js`, `src/lib/markdown-builder.js`)**: `buildWadoUrl` özel `origin` parametresini iletecek şekilde düzeltildi; tek kayıttan birden fazla çalışma klasörü oluştuğunda hepsi `03-radyoloji.md` ve `00-dizin.md` içinde listelenir.
+- **Güvenilirlik, Magic-Byte & Backoff (`src/lib/teleradyoloji-page.js`)**:
+  - `enabizFetchViewerLink` çağrılarına `AbortController` zaman aşımı (15 sn / 25 sn) eklendi.
+  - WADO yanıtlarında `Content-Type` yanında JPEG/PNG/GIF/WebP ve DICOM (`DICM`) magic-byte doğrulaması uygulanır; HTML hata sayfaları reddedilir, `application/octet-stream` altındaki geçerli görüntüler kabul edilir.
+  - `Retry-After` başlığı + gerçek üstel artan bekleme (backoff) eklendi; paralel worker ilerleme sayacı yarışı giderildi.
+- **Hız Seçici & Port Yarışı Düzeltmesi (`src/sidepanel.js`)**: "Hızlı / Dengeli / Yavaş" hız seçimi artık radyoloji görüntü indirme eşzamanlılığına ve gecikmesine yansır; görüntü indirme boyunca watchdog canlı tutulur ve `EXPORT_COMPLETE` sonrası `port.onDisconnect` yarışı önlendi.
+
 ## [1.3.0] - 2026-11-24
 
 ### Yeni Özellik

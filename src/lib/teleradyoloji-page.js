@@ -95,7 +95,7 @@ export async function radiologyPageAuth(cfg) {
  *          concurrency?:number, delayMs?:number}} cfg
  */
 export async function radiologyPageDownload(cfg) {
-  const { runId, jobId, items, token, concurrency = 3, delayMs = 60 } = cfg;
+  const { runId, jobId, items, token, concurrency = 3, delayMs = 60, retryBaseMs = 900 } = cfg;
   const total = items.length;
   let cancelled = false;
   let done = 0;
@@ -105,6 +105,47 @@ export async function radiologyPageDownload(cfg) {
   let lastReport = 0;
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const parseRetryAfterMs = (headerVal) => {
+    if (!headerVal) return null;
+    const raw = String(headerVal).trim();
+    if (/^\d+(\.\d+)?$/.test(raw)) {
+      return Math.min(15000, Math.max(0, Math.round(Number(raw) * 1000)));
+    }
+    const parsedDate = Date.parse(raw);
+    if (Number.isFinite(parsedDate)) {
+      return Math.min(15000, Math.max(0, parsedDate - Date.now()));
+    }
+    return null;
+  };
+
+  const detectMediaKind = (buffer, contentType) => {
+    if (!buffer || buffer.byteLength === 0) {
+      return { ok: false, error: 'Boş görüntü yanıtı' };
+    }
+    if (contentType && /^text\/|application\/(json|xml|xhtml|javascript)/i.test(contentType)) {
+      return { ok: false, error: `Beklenmeyen içerik türü: ${contentType}` };
+    }
+    const b = new Uint8Array(buffer);
+    const isJpeg = b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff;
+    const isPng = b.length >= 4 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47;
+    const isGif = b.length >= 3 && b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46;
+    const isWebp =
+      b.length >= 12 &&
+      b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 &&
+      b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50;
+    const isDicomBytes =
+      b.length > 132 && b[128] === 0x44 && b[129] === 0x49 && b[130] === 0x43 && b[131] === 0x4d;
+
+    if (isDicomBytes) return { ok: true, isDicom: true };
+    if (isJpeg || isPng || isGif || isWebp) return { ok: true, isDicom: false };
+
+    const looksLikeMarkup = b[0] === 0x3c || b[0] === 0x7b;
+    if (/application\/dicom/i.test(contentType) && !looksLikeMarkup) {
+      return { ok: true, isDicom: true };
+    }
+    return { ok: false, error: 'Geçersiz görüntü verisi (JPEG/DICOM imzası yok)' };
+  };
+
   const onMessage = (msg) => {
     if (msg && msg.type === 'RAD_IMG_CANCEL' && (msg.jobId == null || msg.jobId === jobId)) {
       cancelled = true;
@@ -142,6 +183,7 @@ export async function radiologyPageDownload(cfg) {
     let lastStatus = 0;
     let lastError = '';
     while (attempt < 3 && !cancelled) {
+      let retryDelayMs = null;
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 30000);
       try {
@@ -160,25 +202,30 @@ export async function radiologyPageDownload(cfg) {
           const buffer = await res.arrayBuffer();
           clearTimeout(timer);
           const contentType = String(res.headers?.get?.('content-type') || '').toLowerCase();
-          if (contentType && !contentType.startsWith('image/') && !contentType.includes('application/dicom')) {
-            lastError = `Beklenmeyen içerik türü: ${contentType}`;
-            break;
+          const detected = detectMediaKind(buffer, contentType);
+          if (detected.ok) {
+            return { ok: true, buffer, contentType, isDicom: detected.isDicom };
           }
-          if (buffer && buffer.byteLength > 0) {
-            return { ok: true, buffer, contentType };
-          }
-          lastError = 'Boş görüntü yanıtı';
+          lastError = detected.error;
+          break;
         } else {
           clearTimeout(timer);
           lastError = `HTTP ${res.status}`;
           if (res.status === 401 || res.status === 403 || res.status === 404) break;
+          retryDelayMs = parseRetryAfterMs(res.headers?.get?.('retry-after'));
         }
       } catch (err) {
         clearTimeout(timer);
         lastError = err && err.name === 'AbortError' ? 'Zaman aşımı' : String((err && err.message) || err);
       }
       attempt += 1;
-      if (attempt < 3 && !cancelled) await sleep(900 + Math.random() * 500);
+      if (attempt < 3 && !cancelled) {
+        const waitMs =
+          retryDelayMs != null
+            ? retryDelayMs
+            : Math.min(15000, retryBaseMs * (2 ** (attempt - 1)) + Math.floor(Math.random() * Math.min(400, retryBaseMs)));
+        await sleep(waitMs);
+      }
     }
     return { ok: false, status: lastStatus, error: lastError };
   }
@@ -193,15 +240,16 @@ export async function radiologyPageDownload(cfg) {
       if (cancelled) return;
 
       if (result.ok) {
-        bytes += result.buffer.byteLength;
+        const sizeBytes = result.buffer.byteLength;
         const base64 = toBase64(result.buffer);
-        const isDicom = /application\/dicom/i.test(result.contentType || '');
-        const filePath = isDicom ? item.path.replace(/\.jpg$/i, '.dcm') : item.path;
+        const filePath = result.isDicom ? item.path.replace(/\.jpg$/i, '.dcm') : item.path;
+        done += 1;
+        bytes += sizeBytes;
         const chunkSize = 4 * 1024 * 1024;
         let accepted = true;
         if (base64.length <= chunkSize) {
           accepted = await send({
-            type: 'RAD_IMG_FILE', runId, jobId, path: filePath, base64, done: done + 1, total, bytes
+            type: 'RAD_IMG_FILE', runId, jobId, path: filePath, base64, done, total, bytes
           });
         } else {
           const chunkCount = Math.ceil(base64.length / chunkSize);
@@ -214,17 +262,18 @@ export async function radiologyPageDownload(cfg) {
               chunkIndex: c,
               chunkCount,
               data: base64.slice(c * chunkSize, (c + 1) * chunkSize),
-              done: done + 1,
+              done,
               total,
               bytes
             });
           }
         }
         if (!accepted) {
+          done -= 1;
+          bytes -= sizeBytes;
           cancelled = true;
           return;
         }
-        done += 1;
       } else {
         failed += 1;
         const accepted = await send({
@@ -274,26 +323,37 @@ export async function radiologyPageDownload(cfg) {
  * bağlantısını üretir.
  */
 export async function enabizFetchViewerLink(accession) {
+  const ctl = (ms) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ms);
+    return { controller, timer };
+  };
+
   async function readToken() {
     const domToken = document.querySelector('input[name="__RequestVerificationToken"]')?.value || '';
     if (domToken) return domToken;
+    const { controller, timer } = ctl(15000);
     try {
-      const res = await fetch('/Home/Ziyaretlerim', { credentials: 'include' });
+      const res = await fetch('/Home/Ziyaretlerim', { credentials: 'include', signal: controller.signal });
       const html = await res.text();
       return new DOMParser()
         .parseFromString(html, 'text/html')
         .querySelector('input[name="__RequestVerificationToken"]')?.value || '';
     } catch {
       return '';
+    } finally {
+      clearTimeout(timer);
     }
   }
 
   const token = await readToken();
   if (!token) return { ok: false, status: 0, error: 'e-Nabız XSRF anahtarı bulunamadı.' };
+  const { controller, timer } = ctl(25000);
   try {
     const res = await fetch('/RadyolojikGoruntu/GetGoruntuLinkByOrder', {
       method: 'POST',
       credentials: 'include',
+      signal: controller.signal,
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
         'X-Requested-With': 'XMLHttpRequest',
@@ -325,6 +385,12 @@ export async function enabizFetchViewerLink(accession) {
     }
     return { ok: true, status: res.status, link };
   } catch (err) {
-    return { ok: false, status: 0, error: String((err && err.message) || err) };
+    return {
+      ok: false,
+      status: 0,
+      error: err && err.name === 'AbortError' ? 'e-Nabız görüntüleme bağlantısı zaman aşımına uğradı.' : String((err && err.message) || err)
+    };
+  } finally {
+    clearTimeout(timer);
   }
 }

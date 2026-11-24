@@ -287,12 +287,26 @@ async function main() {
   assert.ok(!files.get('04-raporlar.md').includes('11111111111'));
   console.log('✓ Full synthetic Markdown archive build passed (10 files, exact structure)');
 
-  // 4. ZIP creation & unzip integrity verification
-  const zipBytes = await createZipBytes(files, { rootFolder: 'enabiz-md-arsiv' });
+  // 4. ZIP creation & unzip integrity verification (including STORE skip on pre-compressed .jpg)
+  const zipInput = new Map(files);
+  const compressibleDummyJpg = new Uint8Array(256);
+  compressibleDummyJpg[0] = 0xff;
+  compressibleDummyJpg[1] = 0xd8;
+  compressibleDummyJpg[2] = 0xff;
+  zipInput.set('radyoloji_goruntuleri/test/001.jpg', compressibleDummyJpg);
+
+  const zipBytes = await createZipBytes(zipInput, { rootFolder: 'enabiz-md-arsiv' });
+  // Check local file header compression method for the .jpg entry is STORE (0)
+  const jpgMarker = Buffer.from('enabiz-md-arsiv/radyoloji_goruntuleri/test/001.jpg', 'utf8');
+  const nameOffset = Buffer.from(zipBytes).indexOf(jpgMarker);
+  assert.ok(nameOffset >= 30, 'JPG entry header not found in ZIP');
+  const method = new DataView(zipBytes.buffer, zipBytes.byteOffset).getUint16(nameOffset - 22, true);
+  assert.equal(method, 0, 'Pre-compressed .jpg entry should use ZIP method 0 (STORE)');
+
   fs.writeFileSync(TEST_ZIP_PATH, zipBytes);
   try {
     execFileSync('unzip', ['-t', TEST_ZIP_PATH], { stdio: 'pipe' });
-    console.log(`✓ ZIP archive verified cleanly with unzip -t (${zipBytes.byteLength} bytes)`);
+    console.log(`✓ ZIP archive verified cleanly with unzip -t & JPG STORE method (${zipBytes.byteLength} bytes)`);
   } finally {
     fs.rmSync(TEST_ZIP_PATH, { force: true });
   }

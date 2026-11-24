@@ -31,6 +31,8 @@ function dosTimeDate(date = new Date()) {
   return { dosTime, dosDate };
 }
 
+const PRECOMPRESSED_RE = /\.(jpe?g|png|webp|gif|zip|gz|pdf)$/i;
+
 async function deflateRaw(bytes) {
   if (typeof CompressionStream === 'undefined' || bytes.length < 64) {
     return { method: 0, data: bytes };
@@ -76,7 +78,9 @@ export async function createZipBytes(entriesInput, opts = {}) {
     const nameBytes = encoder.encode(fullName);
     const rawBytes = typeof entry.content === 'string' ? encoder.encode(entry.content) : new Uint8Array(entry.content);
     const crc = crc32(rawBytes);
-    const { method, data: compBytes } = await deflateRaw(rawBytes);
+    const { method, data: compBytes } = PRECOMPRESSED_RE.test(fullName)
+      ? { method: 0, data: rawBytes }
+      : await deflateRaw(rawBytes);
 
     // Local file header (30 bytes + name)
     const lh = new Uint8Array(30 + nameBytes.length);

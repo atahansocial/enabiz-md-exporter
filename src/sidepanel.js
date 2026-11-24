@@ -81,6 +81,11 @@ let runRawPdfFiles = [];
 // Radyoloji görüntüleri (Teleradyoloji WADO)
 const RAD_IMG_PREFIX = 'radyoloji_goruntuleri/';
 const TELERADYOLOJI_VIEWER_URL = `${TELERADYOLOJI_ORIGIN}/robots.txt`; // nginx 404 sayfası: SPA çalışmaz, origin doğru kalır
+const RAD_SPEED_CONFIG = {
+  fast: { concurrency: 3, delayMs: 60 },
+  balanced: { concurrency: 2, delayMs: 180 },
+  slow: { concurrency: 1, delayMs: 350 }
+};
 let runRadImageFiles = [];
 let runRadImageStats = null;
 let radImageTabId = null;
@@ -264,6 +269,7 @@ function stopRadImageDownload() {
     chrome.tabs.sendMessage(tabId, { type: 'RAD_IMG_CANCEL', jobId: activeRadJobId, runId: currentRunId }).catch(() => {});
   }
   activeRadJobId = null;
+  radChunkBuffers.clear();
   closeRadImageTab();
 }
 
@@ -331,12 +337,13 @@ async function fetchViewerLinkForAccession(accession) {
   return result.link;
 }
 
-async function downloadRadiologyImages(runId, rawData) {
+async function downloadRadiologyImages(runId, rawData, options = {}) {
   const targets = (rawData.radyoloji || [])
     .map((record, index) => ({ record, index }))
     .filter(({ record }) => record && record.accession);
   if (targets.length === 0) return;
 
+  const speedCfg = RAD_SPEED_CONFIG[options?.speed] || RAD_SPEED_CONFIG.balanced;
   const stats = {
     studyCount: 0,
     seriesCount: 0,
@@ -351,6 +358,7 @@ async function downloadRadiologyImages(runId, rawData) {
   const label = (r) => `${r.tarih || ''} ${r.aciklama || ''}`.trim();
 
   try {
+    resetWatchdog(runId);
     await ensureRadImageTab();
   } catch (err) {
     stats.errors.push(`Görüntüleyici açılamadı: ${(err && err.message) || err}`);
@@ -360,6 +368,7 @@ async function downloadRadiologyImages(runId, rawData) {
   try {
     for (let n = 0; n < targets.length; n += 1) {
       if (runId !== currentRunId) return;
+      resetWatchdog(runId);
       const { record, index } = targets[n];
       updateProgressUI(
         9,
@@ -414,14 +423,23 @@ async function downloadRadiologyImages(runId, rawData) {
 
       let download = null;
       try {
+        resetWatchdog(runId);
         const tabId = await ensureRadImageTab();
         download = await runInTeleradyolojiTab(tabId, radiologyPageDownload, [
-          { runId, jobId, items, token: auth.token, concurrency: 3, delayMs: 60 }
+          {
+            runId,
+            jobId,
+            items,
+            token: auth.token,
+            concurrency: speedCfg.concurrency,
+            delayMs: speedCfg.delayMs
+          }
         ]);
       } catch (err) {
         stats.errors.push(`${label(record)}: görüntü indirme hatası (${(err && err.message) || err}).`);
       } finally {
         activeRadJobId = null;
+        radChunkBuffers.clear();
       }
 
       if (runId !== currentRunId) return;
@@ -431,8 +449,10 @@ async function downloadRadiologyImages(runId, rawData) {
       if (downloaded > 0) {
         stats.studyCount += 1;
         stats.seriesCount += seriesCount;
+        const studyFolders = plan.studies.map((s) => s.folder).filter(Boolean);
         record.images = {
-          folder: plan.studies[0]?.folder || '',
+          folder: studyFolders[0] || '',
+          folders: studyFolders,
           count: downloaded,
           seriesCount,
           bytes: stats.bytes - bytesBefore,
@@ -456,6 +476,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     sendResponse({ ok: false });
     return;
   }
+  resetWatchdog(msg.runId);
 
   if (msg.type === 'RAD_IMG_FILE' || msg.type === 'RAD_IMG_CHUNK') {
     const path = String(msg.path || '');
@@ -591,64 +612,68 @@ function enqueuePdfBlob(runId, msg, opts) {
 }
 
 async function finalizeArchive(runId, rawData, options = {}) {
-  if (runId !== currentRunId) return;
-
-  updateProgressUI(9, TOTAL_STAGES, `PDF metinleri tamamlanıyor (${runPdfProcessedCount} adet)...`);
-  await runPdfQueue;
-  if (runId !== currentRunId) return;
-
-  // Attach extracted PDF texts back onto rawData
-  for (const [idx, parsed] of runReportExtracts.entries()) {
-    if (rawData.raporlar?.raporlar?.[idx]) {
-      rawData.raporlar.raporlar[idx].pdf = {
-        ...(rawData.raporlar.raporlar[idx].pdf || {}),
-        pageCount: parsed.pageCount,
-        extractedText: parsed.text
-      };
-    }
-  }
-  for (const [idx, parsed] of runRadExtracts.entries()) {
-    if (rawData.radyoloji?.[idx]) {
-      rawData.radyoloji[idx].pdf = {
-        ...(rawData.radyoloji[idx].pdf || {}),
-        pageCount: parsed.pageCount,
-        extractedText: parsed.text
-      };
-    }
-  }
-  for (let i = 0; i < (rawData.tahlillerim?.panels || []).length; i++) {
-    const p = rawData.tahlillerim.panels[i];
-    if (p.pdf && runLabPdfTexts[`__panel_${i}`]) {
-      p.pdf.extractedText = runLabPdfTexts[`__panel_${i}`];
-    }
-  }
-
-  if (options.includeRadImages) {
-    await downloadRadiologyImages(runId, rawData);
+  try {
     if (runId !== currentRunId) return;
-  }
 
-  updateProgressUI(10, TOTAL_STAGES, 'Markdown klasör yapısı derleniyor...');
-  const { files, stats } = buildMarkdownArchive(rawData, { labPdfTexts: runLabPdfTexts });
+    updateProgressUI(9, TOTAL_STAGES, `PDF metinleri tamamlanıyor (${runPdfProcessedCount} adet)...`);
+    await runPdfQueue;
+    if (runId !== currentRunId) return;
 
-  const allEntries = new Map();
-  for (const [p, content] of files.entries()) {
-    allEntries.set(p, content);
-  }
-  for (const pf of runRawPdfFiles) {
-    allEntries.set(pf.path, pf.content);
-  }
-  for (const rf of runRadImageFiles) {
-    allEntries.set(rf.path, rf.content);
-  }
-  if (el.optRawJson.checked) {
-    allEntries.set('enabiz_ham_veri.json', JSON.stringify(rawData, null, 2));
-  }
+    // Attach extracted PDF texts back onto rawData
+    for (const [idx, parsed] of runReportExtracts.entries()) {
+      if (rawData.raporlar?.raporlar?.[idx]) {
+        rawData.raporlar.raporlar[idx].pdf = {
+          ...(rawData.raporlar.raporlar[idx].pdf || {}),
+          pageCount: parsed.pageCount,
+          extractedText: parsed.text
+        };
+      }
+    }
+    for (const [idx, parsed] of runRadExtracts.entries()) {
+      if (rawData.radyoloji?.[idx]) {
+        rawData.radyoloji[idx].pdf = {
+          ...(rawData.radyoloji[idx].pdf || {}),
+          pageCount: parsed.pageCount,
+          extractedText: parsed.text
+        };
+      }
+    }
+    for (let i = 0; i < (rawData.tahlillerim?.panels || []).length; i++) {
+      const p = rawData.tahlillerim.panels[i];
+      if (p.pdf && runLabPdfTexts[`__panel_${i}`]) {
+        p.pdf.extractedText = runLabPdfTexts[`__panel_${i}`];
+      }
+    }
 
-  if (runId !== currentRunId) return;
-  renderResults(allEntries, stats);
-  setRunningState(false);
-  disconnectActivePort();
+    if (options.includeRadImages) {
+      await downloadRadiologyImages(runId, rawData, options);
+      if (runId !== currentRunId) return;
+    }
+
+    updateProgressUI(10, TOTAL_STAGES, 'Markdown klasör yapısı derleniyor...');
+    const { files, stats } = buildMarkdownArchive(rawData, { labPdfTexts: runLabPdfTexts });
+
+    const allEntries = new Map();
+    for (const [p, content] of files.entries()) {
+      allEntries.set(p, content);
+    }
+    for (const pf of runRawPdfFiles) {
+      allEntries.set(pf.path, pf.content);
+    }
+    for (const rf of runRadImageFiles) {
+      allEntries.set(rf.path, rf.content);
+    }
+    if (el.optRawJson.checked) {
+      allEntries.set('enabiz_ham_veri.json', JSON.stringify(rawData, null, 2));
+    }
+
+    if (runId !== currentRunId) return;
+    renderResults(allEntries, stats);
+    setRunningState(false);
+    disconnectActivePort();
+  } finally {
+    if (runId === currentRunId) clearWatchdog();
+  }
 }
 
 function renderResults(entries, stats) {
@@ -759,7 +784,7 @@ function renderResults(entries, stats) {
     row.append(pathSpan, sizeSpan);
     const indexContent = entries.get(imageIndexPath);
     row.addEventListener('click', () => {
-      if (indexContent !== undefined) openPreview(imageIndexPath, indexContent, indexContent.length, row);
+      if (indexContent !== undefined) openPreview(imageIndexPath, indexContent, encoder.encode(indexContent).length, row);
     });
     el.fileTree.appendChild(row);
   }
@@ -827,11 +852,11 @@ async function handleStartClick() {
       } else if (msg.type === 'EXPORT_PDF_BLOB') {
         enqueuePdfBlob(runId, msg, options);
       } else if (msg.type === 'EXPORT_COMPLETE') {
-        clearWatchdog();
+        disconnectActivePort();
+        resetWatchdog(runId);
         finalizeArchive(runId, msg.data, options).catch((err) => {
           if (runId === currentRunId) {
             setRunningState(false);
-            disconnectActivePort();
             showError(`Arşiv derleme hatası: ${err?.message || err}`);
           }
         });
@@ -852,10 +877,7 @@ async function handleStartClick() {
     port.onDisconnect.addListener(() => {
       if (activePort === port) activePort = null;
       if (isRunning && runId === currentRunId) {
-        clearWatchdog();
-        setRunningState(false);
-        el.progressCard.classList.add('hidden');
-        showError('e-Nabız sekmesiyle bağlantı kesildi (sayfa yenilenmiş veya kapatılmış olabilir).');
+        cancelCurrentRun('e-Nabız sekmesiyle bağlantı kesildi (sayfa yenilenmiş veya kapatılmış olabilir).');
       }
     });
 

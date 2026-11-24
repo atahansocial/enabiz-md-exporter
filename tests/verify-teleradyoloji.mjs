@@ -203,6 +203,14 @@ const dupPlan = enumerateWorkItem(duplicateSeries, { index: 0 });
 assert.equal(dupPlan.frames.length, 2);
 assert.notEqual(dupPlan.frames[0].path, dupPlan.frames[1].path);
 
+// Özel origin parametresi görev URL'sine aktarılmalı.
+const customOriginPlan = enumerateWorkItem(
+  multiStudy,
+  { tarih: '01.01.2020', aciklama: 'CT', index: 0 },
+  'https://custom-pacs.example'
+);
+assert.ok(customOriginPlan.frames[0].url.startsWith('https://custom-pacs.example/wado?'));
+
 console.log('✓ Teleradyoloji OTAC, WADO ve klasör planı kontrolleri geçti');
 
 // --- Markdown arşivine entegrasyon ---
@@ -219,6 +227,10 @@ const archive = buildMarkdownArchive({
     rapor: 'Normal.',
     images: {
       folder: 'radyoloji_goruntuleri/2016-05-02_BEYIN_SEKMANS_CT_01',
+      folders: [
+        'radyoloji_goruntuleri/2016-05-02_BEYIN_SEKMANS_CT_01',
+        'radyoloji_goruntuleri/2016-05-02_BEYIN_SEKMANS_CT_01_calisma-02'
+      ],
       count: 36,
       seriesCount: 4,
       bytes: 2 * 1024 * 1024,
@@ -230,7 +242,9 @@ const archive = buildMarkdownArchive({
 assert.equal(archive.stats.radImageCount, 36);
 assert.ok(archive.files.has('radyoloji_goruntuleri/00-dizin.md'));
 assert.match(archive.files.get('03-radyoloji.md'), /36 kesit/);
+assert.match(archive.files.get('03-radyoloji.md'), /_calisma-02\//);
 assert.match(archive.files.get('radyoloji_goruntuleri/00-dizin.md'), /2016-05-02_BEYIN_SEKMANS_CT_01/);
+assert.match(archive.files.get('radyoloji_goruntuleri/00-dizin.md'), /_calisma-02\//);
 assert.match(archive.files.get('README.md'), /radyoloji_goruntuleri\/00-dizin\.md/);
 console.log('✓ Radyoloji görüntü dizini Markdown arşivine işlendi');
 
@@ -299,10 +313,18 @@ try {
     }
   };
   globalThis.btoa = (binary) => Buffer.from(binary, 'binary').toString('base64');
+  const jpegBytes = (len = 8) => {
+    const u8 = new Uint8Array(len);
+    u8[0] = 0xff;
+    u8[1] = 0xd8;
+    u8[2] = 0xff;
+    u8[3] = 0xe0;
+    return u8;
+  };
   globalThis.fetch = async () => ({
     ok: true,
     status: 200,
-    arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer
+    arrayBuffer: async () => new Uint8Array([0xff, 0xd8, 0xff]).buffer
   });
 
   const dl = await radiologyPageDownload({
@@ -318,7 +340,7 @@ try {
   const fileMsg = messages.find((m) => m.type === 'RAD_IMG_FILE');
   assert.ok(fileMsg);
   assert.equal(fileMsg.path, 'radyoloji_goruntuleri/a/001.jpg');
-  assert.equal(fileMsg.base64, 'AQID');
+  assert.equal(fileMsg.base64, '/9j/');
   assert.equal(fileMsg.runId, 7);
   assert.ok(messages.some((m) => m.type === 'RAD_IMG_PROGRESS'));
 
@@ -327,7 +349,7 @@ try {
   globalThis.fetch = async () => ({
     ok: true,
     status: 200,
-    arrayBuffer: async () => new Uint8Array(3_200_000).buffer
+    arrayBuffer: async () => jpegBytes(3_200_000).buffer
   });
   const big = await radiologyPageDownload({
     runId: 7,
@@ -342,6 +364,88 @@ try {
   assert.ok(chunks.length >= 2);
   assert.equal(chunks[0].chunkCount, chunks.length);
   assert.equal(chunks.map((c) => c.data).join('').length > 4 * 1024 * 1024, true);
+
+  // HTTP 200 HTML hata sayfası (veya geçersiz imza) reddedilmeli.
+  messages.length = 0;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: (k) => (k.toLowerCase() === 'content-type' ? 'text/html; charset=utf-8' : null) },
+    arrayBuffer: async () => Buffer.from('<html><body>Hata</body></html>').buffer
+  });
+  const htmlReject = await radiologyPageDownload({
+    runId: 7,
+    jobId: 'job-html',
+    items: [{ url: 'https://tr.example/wado?...', path: 'radyoloji_goruntuleri/a/bad.jpg' }],
+    token: 'Bearer TOK',
+    concurrency: 1,
+    delayMs: 0
+  });
+  assert.equal(htmlReject.done, 0);
+  assert.equal(htmlReject.failed, 1);
+  assert.ok(messages.some((m) => m.type === 'RAD_IMG_ERROR'));
+
+  // octet-stream + JPEG ve DICM magic-byte algılama (.jpg / .dcm uzantısı).
+  messages.length = 0;
+  const dicomBuf = new Uint8Array(140);
+  dicomBuf[128] = 0x44; dicomBuf[129] = 0x49; dicomBuf[130] = 0x43; dicomBuf[131] = 0x4d; // DICM
+  let octetCall = 0;
+  globalThis.fetch = async () => {
+    octetCall += 1;
+    const data = octetCall === 1 ? jpegBytes(16) : dicomBuf;
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/octet-stream' },
+      arrayBuffer: async () => data.buffer
+    };
+  };
+  const magicDl = await radiologyPageDownload({
+    runId: 7,
+    jobId: 'job-magic',
+    items: [
+      { url: 'https://tr.example/wado?1', path: 'radyoloji_goruntuleri/a/001.jpg' },
+      { url: 'https://tr.example/wado?2', path: 'radyoloji_goruntuleri/a/002.jpg' }
+    ],
+    token: 'Bearer TOK',
+    concurrency: 1,
+    delayMs: 0
+  });
+  assert.equal(magicDl.done, 2);
+  const magicPaths = messages.filter((m) => m.type === 'RAD_IMG_FILE').map((m) => m.path);
+  assert.deepEqual(magicPaths, ['radyoloji_goruntuleri/a/001.jpg', 'radyoloji_goruntuleri/a/002.dcm']);
+
+  // HTTP 429 + Retry-After sonrası ikinci denemede kurtarma.
+  messages.length = 0;
+  let retryCount = 0;
+  globalThis.fetch = async () => {
+    retryCount += 1;
+    if (retryCount === 1) {
+      return {
+        ok: false,
+        status: 429,
+        headers: { get: (k) => (k.toLowerCase() === 'retry-after' ? '0' : null) },
+        arrayBuffer: async () => new ArrayBuffer(0)
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      arrayBuffer: async () => jpegBytes(12).buffer
+    };
+  };
+  const retryDl = await radiologyPageDownload({
+    runId: 7,
+    jobId: 'job-retry',
+    items: [{ url: 'https://tr.example/wado?retry', path: 'radyoloji_goruntuleri/a/004.jpg' }],
+    token: 'Bearer TOK',
+    concurrency: 1,
+    delayMs: 0,
+    retryBaseMs: 5
+  });
+  assert.equal(retryCount, 2);
+  assert.equal(retryDl.done, 1);
+  assert.equal(retryDl.failed, 0);
 
   // Hata durumunda RAD_IMG_ERROR üretilmeli.
   messages.length = 0;

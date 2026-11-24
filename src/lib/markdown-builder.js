@@ -401,8 +401,12 @@ function buildRadyoloji(data) {
     if (r.images?.count) {
       const seriesPart = r.images.seriesCount ? `${r.images.seriesCount} seri, ` : '';
       const failPart = r.images.failed ? `, ${r.images.failed} kesit indirilemedi` : '';
+      const imgFolders = r.images.folders?.length
+        ? r.images.folders
+        : (r.images.folder ? [r.images.folder] : []);
+      const foldersText = imgFolders.map((f) => `\`${f}/\``).join(', ');
       lines.push(
-        `- **Görüntüler:** ${seriesPart}${r.images.count} kesit${failPart} (${formatByteSize(r.images.bytes)}) → \`${r.images.folder}/\``
+        `- **Görüntüler:** ${seriesPart}${r.images.count} kesit${failPart} (${formatByteSize(r.images.bytes)}) → ${foldersText}`
       );
     }
 
@@ -442,8 +446,12 @@ function buildRadiologyImageIndex(data) {
     '|---|---|---|---:|---:|---:|---|'
   ];
   for (const r of studies) {
+    const imgFolders = r.images.folders?.length
+      ? r.images.folders
+      : (r.images.folder ? [r.images.folder] : []);
+    const foldersCell = imgFolders.map((f) => `\`${mdEsc(f)}/\``).join(', ');
     lines.push(
-      `| ${mdEsc(r.tarih)} | ${mdEsc(r.aciklama)} | ${mdEsc(r.hastane)} | ${r.images.seriesCount || ''} | ${r.images.count} | ${formatByteSize(r.images.bytes)} | \`${mdEsc(r.images.folder)}/\` |`
+      `| ${mdEsc(r.tarih)} | ${mdEsc(r.aciklama)} | ${mdEsc(r.hastane)} | ${r.images.seriesCount || ''} | ${r.images.count} | ${formatByteSize(r.images.bytes)} | ${foldersCell} |`
     );
   }
   if (summary.failedFrames) {

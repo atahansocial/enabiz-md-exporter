@@ -63,15 +63,19 @@ export function normalizeWadoBase(address, origin = TELERADYOLOJI_ORIGIN) {
   return `${origin.replace(/\/+$/, '')}/${raw.replace(/^\/+/, '')}`;
 }
 
-export function buildWadoUrl({
-  base,
-  studyUid,
-  seriesUid,
-  objectUid,
-  frameNumber = null,
-  contentType = 'image/jpeg'
-}) {
-  const normalized = normalizeWadoBase(base);
+export function buildWadoUrl(
+  {
+    base,
+    studyUid,
+    seriesUid,
+    objectUid,
+    frameNumber = null,
+    contentType = 'image/jpeg',
+    origin = TELERADYOLOJI_ORIGIN
+  },
+  originOverride
+) {
+  const normalized = normalizeWadoBase(base, originOverride || origin);
   if (!normalized) return '';
   const sep = /[?&]$/.test(normalized) ? '' : normalized.includes('?') ? '&' : '?';
   const parts = [
