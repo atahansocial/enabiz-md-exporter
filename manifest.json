@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "e-Nabız Markdown Arşivleyici",
+  "version": "1.0.0",
+  "description": "e-Nabız sağlık geçmişinizi %100 yerel olarak tarayıcınızda temiz Markdown klasör yapısına dönüştürüp ZIP veya klasör olarak indirir.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": [
+    "sidePanel",
+    "tabs",
+    "scripting",
+    "downloads"
+  ],
+  "host_permissions": [
+    "https://enabiz.gov.tr/*"
+  ],
+  "action": {
+    "default_title": "e-Nabız Markdown Arşivleyici",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "side_panel": {
+    "default_path": "src/sidepanel.html"
+  },
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://enabiz.gov.tr/*"],
+      "js": ["src/content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';"
+  }
+}

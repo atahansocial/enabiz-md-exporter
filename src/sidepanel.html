@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>e-Nabız Markdown Arşivleyici</title>
+  <link rel="stylesheet" href="sidepanel.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <div class="brand">
+        <img src="../icons/icon48.png" alt="Logo" class="brand-icon" />
+        <div>
+          <h1 class="brand-title">e-Nabız Arşivleyici</h1>
+          <p class="brand-sub">Birebir e-Nabız → Temiz Markdown Klasörü</p>
+        </div>
+      </div>
+      <span class="privacy-badge" title="Verileriniz hiçbir sunucuya gönderilmez">%100 Yerel</span>
+    </header>
+
+    <section id="statusCard" class="card status-card status-checking">
+      <div class="status-row">
+        <span id="statusDot" class="status-dot"></span>
+        <div class="status-text">
+          <div id="statusTitle" class="status-title">Sekme kontrol ediliyor...</div>
+          <div id="statusDesc" class="status-desc">Lütfen bekleyin.</div>
+        </div>
+      </div>
+      <div id="statusActions" class="status-actions hidden">
+        <button id="btnOpenEnabiz" class="btn btn-secondary btn-sm">e-Nabız'ı Aç</button>
+        <button id="btnRecheck" class="btn btn-ghost btn-sm">Yenile</button>
+      </div>
+    </section>
+
+    <details id="settingsBox" class="card settings-card">
+      <summary class="settings-summary">
+        <span>Ayarlar ve Seçenekler</span>
+        <span class="chevron">▾</span>
+      </summary>
+      <div class="settings-body">
+        <div class="year-row">
+          <label class="field">
+            <span>Başlangıç Yılı</span>
+            <select id="startYear">
+              <option value="auto" selected>Otomatik (Tümü)</option>
+              <option value="2014">2014</option>
+              <option value="2015">2015</option>
+              <option value="2016">2016</option>
+              <option value="2017">2017</option>
+              <option value="2018">2018</option>
+              <option value="2019">2019</option>
+              <option value="2020">2020</option>
+              <option value="2021">2021</option>
+              <option value="2022">2022</option>
+              <option value="2023">2023</option>
+              <option value="2024">2024</option>
+              <option value="2025">2025</option>
+              <option value="2026">2026</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Bitiş Yılı</span>
+            <select id="endYear">
+              <option value="auto" selected>Otomatik (Güncel)</option>
+              <option value="2026">2026</option>
+              <option value="2025">2025</option>
+              <option value="2024">2024</option>
+              <option value="2023">2023</option>
+              <option value="2022">2022</option>
+              <option value="2021">2021</option>
+              <option value="2020">2020</option>
+            </select>
+          </label>
+        </div>
+
+        <label class="check-row">
+          <input type="checkbox" id="optReportPdfs" checked />
+          <span>Resmi Rapor PDF içeriklerini Markdown'a çıkar</span>
+        </label>
+        <label class="check-row">
+          <input type="checkbox" id="optLabTimes" checked />
+          <span>Tahlil PDF'lerinden panel saatlerini çıkar</span>
+        </label>
+        <label class="check-row">
+          <input type="checkbox" id="optRawPdfs" />
+          <span>Orijinal PDF dosyalarını da klasöre ekle</span>
+        </label>
+        <label class="check-row">
+          <input type="checkbox" id="optRawJson" />
+          <span>Ham JSON yedeğini de ekle (<code>enabiz_ham_veri.json</code>)</span>
+        </label>
+      </div>
+    </details>
+
+    <div class="primary-actions">
+      <button id="btnStart" class="btn btn-primary" disabled>
+        <span id="btnStartLabel">Sağlık Arşivimi Çek</span>
+      </button>
+    </div>
+
+    <section id="progressCard" class="card progress-card hidden">
+      <div class="progress-head">
+        <span id="progressStage" class="progress-stage">Hazırlanıyor...</span>
+        <span id="progressTimer" class="progress-timer">00:00</span>
+      </div>
+      <div class="progress-track">
+        <div id="progressBar" class="progress-fill" style="width: 0%"></div>
+      </div>
+      <p id="progressDetail" class="progress-detail">Başlatılıyor...</p>
+    </section>
+
+    <section id="errorCard" class="card error-card hidden">
+      <div class="error-title">İşlem Tamamlanamadı</div>
+      <p id="errorMsg" class="error-msg"></p>
+    </section>
+
+    <section id="resultCard" class="card result-card hidden">
+      <div class="result-header">
+        <span class="result-badge">Arşiv Hazır</span>
+        <span id="resultMeta" class="result-meta"></span>
+      </div>
+
+      <div class="stats-grid" id="statsGrid"></div>
+
+      <div class="export-buttons">
+        <button id="btnDownloadZip" class="btn btn-primary">ZIP İndir (<code>enabiz-md-arsiv.zip</code>)</button>
+        <button id="btnSaveFolder" class="btn btn-secondary">Klasör Olarak Kaydet</button>
+        <button id="btnCopyPrompt" class="btn btn-ghost">Yapay Zeka Analiz Prompt'u Kopyala</button>
+      </div>
+
+      <div class="file-tree-wrap">
+        <div class="file-tree-title">Oluşturulan Klasör Yapısı (<code>enabiz-md-arsiv/</code>)</div>
+        <div id="fileTree" class="file-tree"></div>
+      </div>
+    </section>
+
+    <div id="previewModal" class="modal hidden" role="dialog" aria-modal="true">
+      <div class="modal-backdrop" id="modalBackdrop"></div>
+      <div class="modal-panel">
+        <div class="modal-header">
+          <span id="modalTitle" class="modal-title"></span>
+          <button id="btnCloseModal" class="btn btn-ghost btn-sm">Kapat</button>
+        </div>
+        <pre id="modalContent" class="modal-content"></pre>
+      </div>
+    </div>
+
+    <footer class="footer">
+      <p>Hiçbir sağlık verisi dış sunucuya gönderilmez. Salt okunur çalışır; tüm işlem kendi tarayıcınızda gerçekleşir.</p>
+    </footer>
+  </div>
+
+  <script type="module" src="sidepanel.js"></script>
+</body>
+</html>
