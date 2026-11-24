@@ -334,6 +334,37 @@ details[open] .chevron {
   gap: 6px;
 }
 
+.rad-warn-label {
+  font-weight: 500;
+}
+
+.warn-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  color: var(--warn);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.rad-warn-box {
+  margin: 0;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  color: var(--warn);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 .btn {
   display: inline-flex;
   align-items: center;
