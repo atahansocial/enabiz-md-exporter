@@ -1,3 +1,6 @@
+> [!WARNING]
+> **Bu proje "vibecoded" bir projedir.** Kodun büyük bölümü yapay zeka yardımıyla yazılmıştır ve profesyonel bir yazılım ekibi tarafından denetlenmemiştir. Olduğu gibi, hiçbir garanti verilmeden sunulur. Çıktıları tıbbi karar için tek kaynak olarak kullanmayın; önemli bilgileri her zaman e-Nabız'daki orijinal kayıtlarla karşılaştırın.
+
 <div align="center">
 
 <img src="assets/banner.png" alt="e-Nabız Markdown Arşivleyici Banner" width="100%" />
