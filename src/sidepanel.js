@@ -35,6 +35,7 @@ const el = {
   optRawPdfs: document.getElementById('optRawPdfs'),
   optRawJson: document.getElementById('optRawJson'),
   optRadImages: document.getElementById('optRadImages'),
+  radWarnBox: document.getElementById('radWarnBox'),
   requestSpeed: document.getElementById('requestSpeed'),
   btnStart: document.getElementById('btnStart'),
   btnStartLabel: document.getElementById('btnStartLabel'),
@@ -203,6 +204,9 @@ function syncPresetHighlight() {
 
 function syncStartButtonState() {
   syncPresetHighlight();
+  if (el.radWarnBox) {
+    el.radWarnBox.classList.toggle('hidden', !el.optRadImages.checked);
+  }
   if (isRunning) return;
   const selected = getSelectedSections();
   el.btnStart.disabled = !tabReady || selected.length === 0;
