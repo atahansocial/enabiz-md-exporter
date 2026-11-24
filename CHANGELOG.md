@@ -2,6 +2,15 @@
 
 Bu proje [SemVer](https://semver.org/) sürümleme kurallarını takip eder.
 
+## [1.4.0] - 2026-11-24
+
+### Yeni Özellikler
+- **Bölüm Seçimi & "Sadece Radyoloji" Modu (`src/sidepanel.html`, `src/sidepanel.js`, `src/content.js`, `src/lib/markdown-builder.js`)**:
+  - Yan panelin üst kısmına **"Ne Çekilsin?"** kartı eklendi: tek tıkla **"Tümü"**, **"Sadece Radyoloji"** (görüntü indirmeyi de otomatik açar) ve **"Sadece Tahliller"** ön ayarları veya 6 bağımsız bölüm kutucuğu (`Ziyaretler`, `Tanı & İlaçlar`, `Tahliller`, `Radyoloji`, `Sağlık Raporları`, `Aşı, Takip, Ekler`).
+  - İstek atılmayan bölümler `content.js` aşamalarından tamamen çıkarılır ve dinamik adım sayacı buna göre hesaplanır.
+  - `markdown-builder.js` seçili kapsam dışında kalan dosyaları üretmez; örneğin yalnızca radyoloji çekildiğinde `0 ziyaret` uyarısı vermez ve `README.md` yalnızca üretilen dosyaları listeler.
+- **Teleradyoloji İzin Ön Kontrolü (`src/sidepanel.js`)**: "Radyoloji görüntülerini de indir" seçiliyken işlem başlar başlamaz kullanıcı etkileşimi içinde `chrome.permissions.request` ile `teleradyoloji.saglik.gov.tr` izni kontrol edilir. Manifest güncellenmediyse veya izin reddedildiyse sekme hatasına düşmeden önce net uyarı gösterilir.
+
 ## [1.3.1] - 2026-11-24
 
 ### Düzeltmeler & İyileştirmeler

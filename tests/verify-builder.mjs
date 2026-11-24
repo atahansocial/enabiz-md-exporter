@@ -357,6 +357,39 @@ async function main() {
   assert.ok(readmeWarn.includes('## Dışa Aktarım Doğrulama Özeti'));
   assert.ok(readmeWarn.includes('Hastalıklarım') && readmeWarn.includes('HTTP 500'));
   console.log('✓ v1.1.0 hardening checks passed (ISO dates, sort order, safeCodeFence, header map, dedup, partial-failure report)');
+
+  // 6. v1.4.0 selective section export (radiology-only preset)
+  const radOnlyInput = buildSyntheticFixture();
+  radOnlyInput.metadata.selectedSections = ['radyoloji'];
+  radOnlyInput.visits = [];
+  radOnlyInput.radyoloji[0].images = {
+    folder: 'radyoloji_goruntuleri/2026-05-15_Akciger_Grafisi_01',
+    folders: ['radyoloji_goruntuleri/2026-05-15_Akciger_Grafisi_01'],
+    count: 10,
+    seriesCount: 1,
+    bytes: 500000,
+    failed: 0
+  };
+  radOnlyInput.radyolojiImages = {
+    studyCount: 1,
+    seriesCount: 1,
+    frameCount: 10,
+    bytes: 500000,
+    failedFrames: 0,
+    errors: []
+  };
+  const radOnly = buildMarkdownArchive(radOnlyInput);
+  assert.deepEqual(
+    Array.from(radOnly.files.keys()).sort(),
+    ['03-radyoloji.md', 'README.md', 'radyoloji_goruntuleri/00-dizin.md']
+  );
+  assert.equal(radOnly.stats.warnings.length, 0);
+  const radReadme = radOnly.files.get('README.md');
+  assert.ok(radReadme.includes('**Seçili Kapsam:** Radyoloji'));
+  assert.ok(!radReadme.includes('01-tanilar.md'));
+  assert.ok(!radReadme.includes('02-tahliller.md'));
+  assert.ok(!radReadme.includes('ziyaretler/'));
+  console.log('✓ Selective radiology-only export passed (no false warnings, only expected files)');
 }
 
 main().catch((err) => {

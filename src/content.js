@@ -221,6 +221,23 @@
     const fetchLabPdfs = Boolean(options.includeLabPdfTimes || options.includeRawPdfs);
     const currentYearStr = String(new Date().getFullYear());
 
+    const ALL_SECTIONS = ['visits', 'tanilar_ilaclar', 'tahliller', 'radyoloji', 'raporlar', 'ek_bolumler'];
+    const rawSec = options.sections;
+    const selectedSections = Array.isArray(rawSec) && rawSec.length > 0
+      ? ALL_SECTIONS.filter((k) => rawSec.includes(k))
+      : ALL_SECTIONS;
+    const want = Object.fromEntries(ALL_SECTIONS.map((k) => [k, selectedSections.includes(k)]));
+    const totalSteps =
+      1 +
+      (want.visits ? 2 : 0) +
+      (want.tanilar_ilaclar ? 1 : 0) +
+      (want.tahliller ? 1 : 0) +
+      (want.radyoloji ? 1 : 0) +
+      (want.raporlar ? 1 : 0) +
+      (want.ek_bolumler ? 1 : 0) +
+      2;
+    let currentStep = 1;
+
     const postMsg = (payload) => {
       try {
         port.postMessage({ runId, ...payload });
@@ -234,7 +251,7 @@
         type: 'EXPORT_PROGRESS',
         stage,
         stageIndex,
-        totalStages: TOTAL_STAGES,
+        totalStages: totalSteps,
         label,
         ...extra
       });
@@ -268,22 +285,25 @@
 
     try {
       // Stage 1: Session, XSRF token, year discovery & Profile
-      emitProgress('profil', 1, 'Oturum, yıl aralığı ve profil bilgileri alınıyor...');
+      emitProgress('profil', currentStep, 'Oturum ve profil bilgileri alınıyor...');
 
       let xsrfToken = document.querySelector('input[name="__RequestVerificationToken"]')?.value || '';
       let visitsStartYear = options.startYear && options.startYear !== 'auto' ? String(options.startYear) : '';
       let visitsEndYear = options.endYear && options.endYear !== 'auto' ? String(options.endYear) : '';
 
-      const ziyPage = await safeFetchText('/Home/Ziyaretlerim');
-      if (ziyPage.sessionExpired) {
-        postMsg({ type: 'EXPORT_ERROR', sessionExpired: true });
-        return;
-      }
-      checkAbort();
-
-      const ziyPageDoc = ziyPage.ok ? htmlToDoc(ziyPage.text) : document;
-      if (!xsrfToken) {
-        xsrfToken = ziyPageDoc.querySelector('input[name="__RequestVerificationToken"]')?.value || '';
+      const needZiyaretPage = !xsrfToken || want.visits || want.tanilar_ilaclar || want.tahliller || want.raporlar;
+      let ziyPageDoc = document;
+      if (needZiyaretPage) {
+        const ziyPage = await safeFetchText('/Home/Ziyaretlerim');
+        if (ziyPage.sessionExpired) {
+          postMsg({ type: 'EXPORT_ERROR', sessionExpired: true });
+          return;
+        }
+        checkAbort();
+        if (ziyPage.ok) ziyPageDoc = htmlToDoc(ziyPage.text);
+        if (!xsrfToken) {
+          xsrfToken = ziyPageDoc.querySelector('input[name="__RequestVerificationToken"]')?.value || '';
+        }
       }
 
       const startOpts = Array.from(ziyPageDoc.querySelectorAll('#baslangicyilSelect option'))
@@ -313,34 +333,15 @@
         : { adSoyad: detectHeaderName() };
       recordSection('profil', 'Profil Bilgilerim', '/Home/ProfilBilgilerim', profRes, profRes.ok ? 1 : 0);
 
-      // Stage 2: Visits list
-      emitProgress('ziyaret_liste', 2, `Ziyaret listesi çekiliyor (${visitsStartYear}–${visitsEndYear})...`);
-
-      const ziyListRes = await postForm(
-        '/Ziyaret/Index',
-        { baslangicYil: visitsStartYear, bitisYil: visitsEndYear },
-        xsrfToken
-      );
-      if (ziyListRes.sessionExpired) {
-        postMsg({ type: 'EXPORT_ERROR', sessionExpired: true });
-        return;
-      }
-      checkAbort();
-
-      let visits = ziyListRes.ok ? P.parseVisitCardsFromDoc(htmlToDoc(ziyListRes.text)) : [];
-      if (visits.length === 0) visits = P.parseVisitCardsFromDoc(ziyPageDoc);
-      if (visits.length === 0 && location.pathname.includes('/Home/Ziyaretlerim')) {
-        visits = P.parseVisitCardsFromDoc(document);
-      }
-      recordSection('ziyaretler_liste', 'Ziyaret Listesi', '/Ziyaret/Index', ziyListRes, visits.length);
-
+      let visits = [];
       const exportData = {
         metadata: {
           patientName: profil.adSoyad || detectHeaderName(),
           exportedAt: new Date().toISOString(),
           sourceUrl: location.href,
           dateRange: { start: visitsStartYear, end: visitsEndYear },
-          domVisitCount: visits.length
+          domVisitCount: 0,
+          selectedSections
         },
         profil,
         visits,
@@ -367,13 +368,38 @@
         errors
       };
 
-      // Stage 3: Visit details (4 concurrent)
-      emitProgress(
-        'ziyaret_detay',
-        3,
-        `Ziyaret detayları ve reçeteler çekiliyor (0/${visits.length})...`,
-        { current: 0, total: visits.length }
-      );
+      // Stage 2 & 3: Visits list + Visit details
+      if (want.visits) {
+        currentStep += 1;
+        emitProgress('ziyaret_liste', currentStep, `Ziyaret listesi çekiliyor (${visitsStartYear}–${visitsEndYear})...`);
+
+        const ziyListRes = await postForm(
+          '/Ziyaret/Index',
+          { baslangicYil: visitsStartYear, bitisYil: visitsEndYear },
+          xsrfToken
+        );
+        if (ziyListRes.sessionExpired) {
+          postMsg({ type: 'EXPORT_ERROR', sessionExpired: true });
+          return;
+        }
+        checkAbort();
+
+        visits = ziyListRes.ok ? P.parseVisitCardsFromDoc(htmlToDoc(ziyListRes.text)) : [];
+        if (visits.length === 0) visits = P.parseVisitCardsFromDoc(ziyPageDoc);
+        if (visits.length === 0 && location.pathname.includes('/Home/Ziyaretlerim')) {
+          visits = P.parseVisitCardsFromDoc(document);
+        }
+        exportData.visits = visits;
+        exportData.metadata.domVisitCount = visits.length;
+        recordSection('ziyaretler_liste', 'Ziyaret Listesi', '/Ziyaret/Index', ziyListRes, visits.length);
+
+        currentStep += 1;
+        emitProgress(
+          'ziyaret_detay',
+          currentStep,
+          `Ziyaret detayları ve reçeteler çekiliyor (0/${visits.length})...`,
+          { current: 0, total: visits.length }
+        );
 
       const knownPaneIds = new Set([
         'pills-ziyaretlerimTani',
@@ -493,22 +519,25 @@
         v.detay = { tani, onTani, ekTani, islemler, receteler, tahliller, rapor, doktorMesaji, gozlukRecetesi, ekSekmeler };
       }
 
-      for (let i = 0; i < visits.length; i += 4) {
-        checkAbort();
-        await Promise.all(visits.slice(i, i + 4).map(processVisit));
-        const done = Math.min(i + 4, visits.length);
-        emitProgress(
-          'ziyaret_detay',
-          3,
-          `Ziyaret detayları ve reçeteler çekiliyor (${done}/${visits.length})...`,
-          { current: done, total: visits.length }
-        );
-        await sleep(currentDelayMs);
+        for (let i = 0; i < visits.length; i += 4) {
+          checkAbort();
+          await Promise.all(visits.slice(i, i + 4).map(processVisit));
+          const done = Math.min(i + 4, visits.length);
+          emitProgress(
+            'ziyaret_detay',
+            currentStep,
+            `Ziyaret detayları ve reçeteler çekiliyor (${done}/${visits.length})...`,
+            { current: done, total: visits.length }
+          );
+          await sleep(currentDelayMs);
+        }
       }
 
       // Stage 4: Hastaliklarim + Ilaclarim + Recetelerim cross-check
-      emitProgress('tanilar_ilaclar', 4, 'Hastalıklarım ve İlaç/Reçete geçmişi çekiliyor...');
-      checkAbort();
+      if (want.tanilar_ilaclar) {
+        currentStep += 1;
+        emitProgress('tanilar_ilaclar', currentStep, 'Hastalıklarım ve İlaç/Reçete geçmişi çekiliyor...');
+        checkAbort();
 
       const hasRes = await postForm(
         '/Hastalik/Index',
@@ -584,13 +613,16 @@
       if (optRes.ok) exportData.recetelerimOzet.optik = P.parseTable(htmlToDoc(optRes.text).querySelector('table'));
       recordSection('optik', 'Optik Reçeteleri', '/Recete/GetOptikReceteler', optRes, exportData.recetelerimOzet.optik?.rows?.length || 0);
 
-      const tibRes = await postForm('/Recete/GetTibbiCihazReceteler', { baslangicYil: wideStartYear, bitisYil: visitsEndYear }, xsrfToken);
-      if (tibRes.ok) exportData.recetelerimOzet.tibbiCihaz = P.parseTable(htmlToDoc(tibRes.text).querySelector('table'));
-      recordSection('tibbi_cihaz', 'Tıbbi Cihaz Reçeteleri', '/Recete/GetTibbiCihazReceteler', tibRes, exportData.recetelerimOzet.tibbiCihaz?.rows?.length || 0);
+        const tibRes = await postForm('/Recete/GetTibbiCihazReceteler', { baslangicYil: wideStartYear, bitisYil: visitsEndYear }, xsrfToken);
+        if (tibRes.ok) exportData.recetelerimOzet.tibbiCihaz = P.parseTable(htmlToDoc(tibRes.text).querySelector('table'));
+        recordSection('tibbi_cihaz', 'Tıbbi Cihaz Reçeteleri', '/Recete/GetTibbiCihazReceteler', tibRes, exportData.recetelerimOzet.tibbiCihaz?.rows?.length || 0);
+      }
 
       // Stage 5: Tahlillerim + COVID-19 + Lab PDFs
-      emitProgress('tahliller', 5, 'Tahlil panelleri çekiliyor...');
-      checkAbort();
+      if (want.tahliller) {
+        currentStep += 1;
+        emitProgress('tahliller', currentStep, 'Tahlil panelleri çekiliyor...');
+        checkAbort();
 
       const tah0Res = await postForm(
         '/Tahlil/Index',
@@ -661,17 +693,20 @@
           const done = Math.min(i + 3, targets.length);
           emitProgress(
             'tahliller',
-            5,
+            currentStep,
             `Tahlil PDF saatleri alınıyor (${done}/${targets.length})...`,
             { current: done, total: targets.length }
           );
           await sleep(currentDelayMs);
         }
+        }
       }
 
       // Stage 6: Radyoloji
-      emitProgress('radyoloji', 6, 'Radyolojik görüntüler ve raporlar çekiliyor...');
-      checkAbort();
+      if (want.radyoloji) {
+        currentStep += 1;
+        emitProgress('radyoloji', currentStep, 'Radyolojik görüntüler ve raporlar çekiliyor...');
+        checkAbort();
 
       const radRes = await postForm('/RadyolojikGoruntu', { startYear: wideStartYear, endYear: visitsEndYear }, xsrfToken);
       if (radRes.sessionExpired) {
@@ -764,11 +799,14 @@
           });
         }
       }
-      recordSection('radyoloji', 'Radyoloji', '/RadyolojikGoruntu', radRes, exportData.radyoloji.length);
+        recordSection('radyoloji', 'Radyoloji', '/RadyolojikGoruntu', radRes, exportData.radyoloji.length);
+      }
 
       // Stage 7: Raporlarim & Official PDFs
-      emitProgress('raporlar', 7, 'Sağlık raporları ve resmi PDF dosyaları çekiliyor...');
-      checkAbort();
+      if (want.raporlar) {
+        currentStep += 1;
+        emitProgress('raporlar', currentStep, 'Sağlık raporları ve resmi PDF dosyaları çekiliyor...');
+        checkAbort();
 
       const rapRes = await postForm('/Rapor/Index', { startYear: wideStartYear, endYear: visitsEndYear }, xsrfToken);
       if (rapRes.sessionExpired) {
@@ -824,11 +862,14 @@
             { current: i + 1, total: pdfTargets.length }
           );
         }
+        }
       }
 
       // Stage 8: Asi, Kronik Takip, Randevular, Malzemeler & Other sections
-      emitProgress('ek_bolumler', 8, 'Aşı, kronik takip, randevu ve tıbbi malzemeler çekiliyor...');
-      checkAbort();
+      if (want.ek_bolumler) {
+        currentStep += 1;
+        emitProgress('ek_bolumler', currentStep, 'Aşı, kronik takip, randevu ve tıbbi malzemeler çekiliyor...');
+        checkAbort();
 
       const asiRes = await safeFetchText('/Home/AsiTakvimi');
       if (asiRes.ok) {
@@ -991,7 +1032,8 @@
           tables: Array.from((d.querySelector('main') || d.body).querySelectorAll('table')).map((t) => ({ id: t.id || '', ...P.parseTable(t) }))
         };
       }
-      recordSection('dokumanlarim', 'Dokümanlarım', '/Home/Dokumanlarim', dokRes, exportData.dokumanlarim.tables.reduce((a, t) => a + t.rows.length, 0));
+        recordSection('dokumanlarim', 'Dokümanlarım', '/Home/Dokumanlarim', dokRes, exportData.dokumanlarim.tables.reduce((a, t) => a + t.rows.length, 0));
+      }
 
       postMsg({ type: 'EXPORT_COMPLETE', data: exportData });
     } catch (err) {

@@ -889,10 +889,24 @@ function buildVisitsByYear(data) {
   return { summary, files };
 }
 
+const SECTION_LABELS = {
+  visits: 'Ziyaretler',
+  tanilar_ilaclar: 'Tanı ve İlaçlar',
+  tahliller: 'Tahliller',
+  radyoloji: 'Radyoloji',
+  raporlar: 'Sağlık Raporları',
+  ek_bolumler: 'Aşı, Takip, Malzeme ve Ekler'
+};
+
 function buildReadme(data, stats) {
   const prof = data.profil || {};
   const meta = data.metadata || {};
   const name = cleanStr(prof.adSoyad || meta.patientName || 'Hasta');
+  const selArr = Array.isArray(meta.selectedSections) && meta.selectedSections.length > 0
+    ? meta.selectedSections
+    : null;
+  const isSelected = (k) => !selArr || selArr.includes(k);
+  const isPartialScope = Boolean(selArr && selArr.length < Object.keys(SECTION_LABELS).length);
   const lines = [`# e-Nabız Tam Sağlık Arşivi — ${name}`, ''];
 
   if (stats.warnings?.length > 0) {
@@ -904,8 +918,15 @@ function buildReadme(data, stats) {
     lines.push('');
   }
 
+  if (isSelected('visits')) {
+    lines.push(`- **Kapsam:** ${stats.oldestVisit} – ${stats.newestVisit} (\`${stats.totalVisits}\` ziyaret, \`${stats.totalIslemRows}\` tıbbi işlem)`);
+  }
+  if (isPartialScope) {
+    const scopeNames = selArr.map((k) => SECTION_LABELS[k] || k).join(', ');
+    lines.push(`- **Seçili Kapsam:** ${scopeNames}`);
+  }
+
   lines.push(
-    `- **Kapsam:** ${stats.oldestVisit} – ${stats.newestVisit} (\`${stats.totalVisits}\` ziyaret, \`${stats.totalIslemRows}\` tıbbi işlem)`,
     `- **Dışa Aktarım:** ${cleanStr(meta.exportedAt)}`,
     '- **Format Notu:** Tüm tıbbi veriler, resmi PDF içerikleri ve kronolojik ziyaret/işlem kayıtları korunmuş; yasal uyarılar, e-imza doğrulama altbilgileri, form doldurma yönergeleri ve tekrarlayan kimlik üstbilgileri çıkarılmıştır.',
     '',
@@ -924,22 +945,37 @@ function buildReadme(data, stats) {
     '',
     '| Dosya | İçerik | Kayıt Sayısı |',
     '|---|---|---|',
-    `| [01-tanilar.md](01-tanilar.md) | ICD-10 tanı sıklığı + Hastalıklarım tam listesi | ${stats.uniqueDiagnosesCount} benzersiz tanı · ${stats.hastaliklarimCount} hastalık satırı |`,
-    `| [02-tahliller.md](02-tahliller.md) | Referans dışı tahliller + tüm ${stats.panelCount} tahlil paneli | ${stats.labRowsCount} parametre (${stats.oorCount} referans dışı) |`,
-    `| [03-radyoloji.md](03-radyoloji.md) | Radyolojik incelemeler ve temizlenmiş tam rapor metinleri | ${stats.radCount} inceleme (${stats.radReportCount} yazılı rapor) |`,
+    ...(isSelected('visits') || isSelected('tanilar_ilaclar')
+      ? [`| [01-tanilar.md](01-tanilar.md) | ICD-10 tanı sıklığı + Hastalıklarım tam listesi | ${stats.uniqueDiagnosesCount} benzersiz tanı · ${stats.hastaliklarimCount} hastalık satırı |`]
+      : []),
+    ...(isSelected('tahliller')
+      ? [`| [02-tahliller.md](02-tahliller.md) | Referans dışı tahliller + tüm ${stats.panelCount} tahlil paneli | ${stats.labRowsCount} parametre (${stats.oorCount} referans dışı) |`]
+      : []),
+    ...(isSelected('radyoloji')
+      ? [`| [03-radyoloji.md](03-radyoloji.md) | Radyolojik incelemeler ve temizlenmiş tam rapor metinleri | ${stats.radCount} inceleme (${stats.radReportCount} yazılı rapor) |`]
+      : []),
     ...(stats.radImageCount > 0
       ? [`| [radyoloji_goruntuleri/00-dizin.md](radyoloji_goruntuleri/00-dizin.md) | Radyoloji görüntü kesitleri (JPEG, orijinal çözünürlük) | ${stats.radImageCount} kesit · ${formatByteSize(stats.radImageBytes)} |`]
       : []),
-    `| [04-raporlar.md](04-raporlar.md) | Sağlık raporları listesi + ${stats.raporPdfExtractedCount} resmi PDF'in temizlenmiş klinik özeti | ${stats.raporCount} rapor (${stats.raporPdfExtractedCount} tam içerik) |`,
-    `| [05-ilaclar-ve-receteler.md](05-ilaclar-ve-receteler.md) | Reçete detayları (yazılan/alınan) + İlaçlarım geçmişi | ${stats.receteCount} reçete · ${stats.ilaclarimCount} ilaç satırı |`,
-    `| [06-asi-takip-malzeme.md](06-asi-takip-malzeme.md) | Aşı takvimi, kronik tarama bulguları, randevu, tıbbi malzemeler | ${stats.asiCount} aşı · ${stats.takipCount} takip · ${stats.malzemeCount} malzeme |`,
-    `| \`ziyaretler/\` | Yıllara göre tüm ziyaret ve işlem detayları | ${stats.totalVisits} ziyaret · ${stats.totalIslemRows} işlem |`,
-    '',
-    '### Yıllara Göre Ziyaret Dosyaları',
-    ''
+    ...(isSelected('raporlar')
+      ? [`| [04-raporlar.md](04-raporlar.md) | Sağlık raporları listesi + ${stats.raporPdfExtractedCount} resmi PDF'in temizlenmiş klinik özeti | ${stats.raporCount} rapor (${stats.raporPdfExtractedCount} tam içerik) |`]
+      : []),
+    ...(isSelected('visits') || isSelected('tanilar_ilaclar')
+      ? [`| [05-ilaclar-ve-receteler.md](05-ilaclar-ve-receteler.md) | Reçete detayları (yazılan/alınan) + İlaçlarım geçmişi | ${stats.receteCount} reçete · ${stats.ilaclarimCount} ilaç satırı |`]
+      : []),
+    ...(isSelected('ek_bolumler')
+      ? [`| [06-asi-takip-malzeme.md](06-asi-takip-malzeme.md) | Aşı takvimi, kronik tarama bulguları, randevu, tıbbi malzemeler | ${stats.asiCount} aşı · ${stats.takipCount} takip · ${stats.malzemeCount} malzeme |`]
+      : []),
+    ...(isSelected('visits')
+      ? [`| \`ziyaretler/\` | Yıllara göre tüm ziyaret ve işlem detayları | ${stats.totalVisits} ziyaret · ${stats.totalIslemRows} işlem |`]
+      : [])
   );
-  for (const yf of stats.yearFiles) {
-    lines.push(`- [${yf.label}](ziyaretler/${yf.fname}) — ${yf.visitCount} ziyaret, ${yf.procCount} işlem`);
+
+  if (isSelected('visits') && stats.yearFiles.length > 0) {
+    lines.push('', '### Yıllara Göre Ziyaret Dosyaları', '');
+    for (const yf of stats.yearFiles) {
+      lines.push(`- [${yf.label}](ziyaretler/${yf.fname}) — ${yf.visitCount} ziyaret, ${yf.procCount} işlem`);
+    }
   }
 
   if (data.sectionStatuses?.length > 0) {
@@ -1078,10 +1114,15 @@ export function buildMarkdownArchive(rawData, opts = {}) {
     .filter(Boolean)
     .sort((a, b) => dateSortKey(a) - dateSortKey(b));
 
+  const selArr = Array.isArray(data.metadata?.selectedSections) && data.metadata.selectedSections.length > 0
+    ? data.metadata.selectedSections
+    : null;
+  const isSelected = (k) => !selArr || selArr.includes(k);
+
   const failedSections = (data.sectionStatuses || []).filter((s) => !s.ok);
   const failedVisitDetails = visits.filter((v) => v.detayUrl && v.detayStatus && v.detayStatus !== 200);
   const warnings = [];
-  if (visits.length === 0) {
+  if (isSelected('visits') && visits.length === 0) {
     warnings.push('Hiç ziyaret kaydı bulunamadı (`0` ziyaret). Oturum veya seçili yıl aralığını kontrol edin.');
   }
   for (const fs of failedSections) {
@@ -1137,17 +1178,31 @@ export function buildMarkdownArchive(rawData, opts = {}) {
 
   const files = new Map();
   files.set('README.md', buildReadme(data, stats));
-  files.set('01-tanilar.md', buildTanilar(data, stats));
-  files.set('02-tahliller.md', buildTahliller(data, labPdfTexts, oorList));
-  files.set('03-radyoloji.md', radMd);
+  if (isSelected('visits') || isSelected('tanilar_ilaclar')) {
+    files.set('01-tanilar.md', buildTanilar(data, stats));
+  }
+  if (isSelected('tahliller')) {
+    files.set('02-tahliller.md', buildTahliller(data, labPdfTexts, oorList));
+  }
+  if (isSelected('radyoloji')) {
+    files.set('03-radyoloji.md', radMd);
+  }
   if (stats.radImageCount > 0) {
     files.set('radyoloji_goruntuleri/00-dizin.md', buildRadiologyImageIndex(data));
   }
-  files.set('04-raporlar.md', buildRaporlar(data));
-  files.set('05-ilaclar-ve-receteler.md', buildIlaclar(data));
-  files.set('06-asi-takip-malzeme.md', buildAsiTakipMalzeme(data));
-  for (const [relPath, content] of visitFiles.entries()) {
-    files.set(relPath, content);
+  if (isSelected('raporlar')) {
+    files.set('04-raporlar.md', buildRaporlar(data));
+  }
+  if (isSelected('visits') || isSelected('tanilar_ilaclar')) {
+    files.set('05-ilaclar-ve-receteler.md', buildIlaclar(data));
+  }
+  if (isSelected('ek_bolumler')) {
+    files.set('06-asi-takip-malzeme.md', buildAsiTakipMalzeme(data));
+  }
+  if (isSelected('visits')) {
+    for (const [relPath, content] of visitFiles.entries()) {
+      files.set(relPath, content);
+    }
   }
 
   return { files, stats };

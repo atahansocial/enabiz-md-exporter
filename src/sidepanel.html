@@ -33,6 +33,54 @@
       </div>
     </section>
 
+    <section id="scopeCard" class="card scope-card">
+      <div class="scope-head">
+        <span class="scope-title">Ne Çekilsin?</span>
+        <div class="preset-row" role="group" aria-label="Hızlı kapsam seçimi">
+          <button type="button" class="preset-btn is-active" data-preset="all">Tümü</button>
+          <button type="button" class="preset-btn" data-preset="radyoloji">Sadece Radyoloji</button>
+          <button type="button" class="preset-btn" data-preset="tahliller">Sadece Tahliller</button>
+        </div>
+      </div>
+      <div class="scope-grid">
+        <label class="check-row">
+          <input type="checkbox" id="secVisits" name="exportSection" value="visits" checked />
+          <span>Ziyaretler</span>
+        </label>
+        <label class="check-row">
+          <input type="checkbox" id="secTanilarIlaclar" name="exportSection" value="tanilar_ilaclar" checked />
+          <span>Tanı & İlaçlar</span>
+        </label>
+        <label class="check-row">
+          <input type="checkbox" id="secTahliller" name="exportSection" value="tahliller" checked />
+          <span>Tahliller</span>
+        </label>
+        <label class="check-row">
+          <input type="checkbox" id="secRadyoloji" name="exportSection" value="radyoloji" checked />
+          <span>Radyoloji</span>
+        </label>
+        <label class="check-row">
+          <input type="checkbox" id="secRaporlar" name="exportSection" value="raporlar" checked />
+          <span>Sağlık Raporları</span>
+        </label>
+        <label class="check-row">
+          <input type="checkbox" id="secEkBolumler" name="exportSection" value="ek_bolumler" checked />
+          <span>Aşı, Takip, Ekler</span>
+        </label>
+      </div>
+      <div class="scope-divider">
+        <label class="check-row">
+          <input type="checkbox" id="optRadImages" />
+          <span>Radyoloji görüntülerini de indir (tüm seriler/kesitler)</span>
+        </label>
+        <p class="field-hint">
+          İsteğe bağlıdır (varsayılan kapalı). Açıldığında Teleradyoloji görüntüleyicisi arka planda
+          açılır ve tüm serilerin kesitleri JPEG olarak <code>radyoloji_goruntuleri/</code> altına
+          indirilir. İşlem uzun sürebilir ve arşivi birkaç GB'a çıkarabilir.
+        </p>
+      </div>
+    </section>
+
     <details id="settingsBox" class="card settings-card">
       <summary class="settings-summary">
         <span>Ayarlar ve Seçenekler</span>
@@ -82,15 +130,6 @@
           <input type="checkbox" id="optRawPdfs" />
           <span>Orijinal PDF dosyalarını da klasöre ekle</span>
         </label>
-        <label class="check-row">
-          <input type="checkbox" id="optRadImages" />
-          <span>Radyoloji görüntülerini de indir (tüm seriler/kesitler)</span>
-        </label>
-        <p class="field-hint">
-          İsteğe bağlıdır (varsayılan kapalı). Açıldığında Teleradyoloji görüntüleyicisi arka planda
-          açılır ve tüm serilerin kesitleri JPEG olarak <code>radyoloji_goruntuleri/</code> altına
-          indirilir. İşlem uzun sürebilir ve arşivi birkaç GB'a çıkarabilir.
-        </p>
         <label class="check-row">
           <input type="checkbox" id="optRawJson" />
           <span>Ham JSON yedeğini de ekle (<code>enabiz_ham_veri.json</code>)</span>

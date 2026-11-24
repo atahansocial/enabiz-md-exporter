@@ -32,7 +32,7 @@
 
 ## Öne Çıkan Özellikler
 
-- **Tek Tıkla Tam Arşiv:** Ziyaretler, ICD-10 tanılar, işlemler, yazılan/alınan reçeteler, çoklu ve tekil tahlil panelleri (`Tekil Tetkikler`), COVID-19 testleri, radyoloji raporları, resmi sağlık raporları, aşı takvimi, kronik taramalar, randevular ve tıbbi malzemelerin tamamını çeker.
+- **Tek Tıkla Tam veya Seçili Arşiv:** İsterseniz tüm geçmişi (ziyaretler, ICD-10 tanılar, işlemler, reçeteler, tahliller, radyoloji, sağlık raporları, aşılar, kronik taramalar, randevular, malzemeler), isterseniz yan paneldeki **"Ne Çekilsin?"** ön ayarlarıyla yalnızca **"Sadece Radyoloji"** ya da **"Sadece Tahliller"** gibi seçili bölümleri çekin.
 - **Çevrimdışı Türkçe PDF Çözümleme:** Resmi sağlık raporlarının (İstirahat, Durum Bildirir, Sürücü, Sağlık Kurulu vb.) PDF içeriklerini ve tahlil panellerinin saat bilgilerini eklenti içine gömülü Mozilla [`pdfjs-dist`](vendor/README.txt) ile tamamen tarayıcı içinde UTF-8 olarak çözümler; e-imza ve tekrarlayan kimlik alt/üst bilgilerini temizler.
 - **Referans Dışı Otomatik Sınıflandırma:** Tahlil sonuçlarını referans aralıklarına göre otomatik olarak `Yüksek ↑`, `Düşük ↓`, `Referans Dışı` ve `Normal` olarak etiketler.
 - **ZIP veya Doğrudan Klasör Kaydı:** İster tek bir `enabiz-md-arsiv-YYYY-AA-GG.zip` dosyası indirin, isterseniz File System Access API ile doğrudan diskinizde `enabiz-md-arsiv/` klasörü oluşturun.

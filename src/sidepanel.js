@@ -15,6 +15,7 @@ import {
 
 const ENABIZ_ZIYARET_URL = 'https://enabiz.gov.tr/Home/Ziyaretlerim';
 const TOTAL_STAGES = 10;
+const ALL_SECTIONS = ['visits', 'tanilar_ilaclar', 'tahliller', 'radyoloji', 'raporlar', 'ek_bolumler'];
 const WATCHDOG_MS = 60000;
 
 const el = {
@@ -24,6 +25,9 @@ const el = {
   statusActions: document.getElementById('statusActions'),
   btnOpenEnabiz: document.getElementById('btnOpenEnabiz'),
   btnRecheck: document.getElementById('btnRecheck'),
+  secCheckboxes: Array.from(document.querySelectorAll('input[name="exportSection"]')),
+  secRadyoloji: document.getElementById('secRadyoloji'),
+  presetBtns: Array.from(document.querySelectorAll('.preset-btn[data-preset]')),
   startYear: document.getElementById('startYear'),
   endYear: document.getElementById('endYear'),
   optReportPdfs: document.getElementById('optReportPdfs'),
@@ -60,6 +64,8 @@ const el = {
 };
 
 let activeTabId = null;
+let tabReady = false;
+let activeTotalStages = TOTAL_STAGES;
 let activePort = null;
 let currentRunId = 0;
 let isRunning = false;
@@ -166,6 +172,82 @@ async function ensureContentScriptAndPing(tab) {
   }
 }
 
+function getSelectedSections() {
+  return el.secCheckboxes.filter((cb) => cb.checked).map((cb) => cb.value);
+}
+
+function getExpectedTotalStages(sections) {
+  const s = new Set(sections);
+  return (
+    1 +
+    (s.has('visits') ? 2 : 0) +
+    (s.has('tanilar_ilaclar') ? 1 : 0) +
+    (s.has('tahliller') ? 1 : 0) +
+    (s.has('radyoloji') ? 1 : 0) +
+    (s.has('raporlar') ? 1 : 0) +
+    (s.has('ek_bolumler') ? 1 : 0) +
+    2
+  );
+}
+
+function syncPresetHighlight() {
+  const selected = getSelectedSections();
+  const isAll = selected.length === ALL_SECTIONS.length && !el.optRadImages.checked;
+  const isRadOnly = selected.length === 1 && selected[0] === 'radyoloji' && el.optRadImages.checked;
+  const isLabOnly = selected.length === 1 && selected[0] === 'tahliller' && !el.optRadImages.checked;
+  const match = isAll ? 'all' : isRadOnly ? 'radyoloji' : isLabOnly ? 'tahliller' : '';
+  for (const btn of el.presetBtns) {
+    btn.classList.toggle('is-active', btn.dataset.preset === match);
+  }
+}
+
+function syncStartButtonState() {
+  syncPresetHighlight();
+  if (isRunning) return;
+  const selected = getSelectedSections();
+  el.btnStart.disabled = !tabReady || selected.length === 0;
+  if (selected.length === ALL_SECTIONS.length) {
+    el.btnStartLabel.textContent = 'Sağlık Arşivimi Çek';
+  } else if (selected.length === 1 && selected[0] === 'radyoloji') {
+    el.btnStartLabel.textContent = 'Radyoloji Arşivini Çek';
+  } else {
+    el.btnStartLabel.textContent = 'Seçili Bölümleri Çek';
+  }
+}
+
+function applyScopePreset(preset) {
+  if (preset === 'all') {
+    el.secCheckboxes.forEach((cb) => { cb.checked = true; });
+    el.optRadImages.checked = false;
+  } else if (preset === 'radyoloji') {
+    el.secCheckboxes.forEach((cb) => { cb.checked = cb.value === 'radyoloji'; });
+    el.optRadImages.checked = true;
+  } else if (preset === 'tahliller') {
+    el.secCheckboxes.forEach((cb) => { cb.checked = cb.value === 'tahliller'; });
+    el.optRadImages.checked = false;
+  }
+  syncStartButtonState();
+}
+
+async function ensureTeleradyolojiPermission() {
+  if (!chrome.permissions?.request) return { ok: true };
+  try {
+    const granted = await chrome.permissions.request({ origins: [`${TELERADYOLOJI_ORIGIN}/*`] });
+    if (!granted) {
+      return {
+        ok: false,
+        error: 'Radyoloji görüntüleri için Teleradyoloji erişim izni verilmedi. İzni onaylayın veya "Radyoloji görüntülerini de indir" seçeneğini kapatın.'
+      };
+    }
+    return { ok: true };
+  } catch {
+    return {
+      ok: false,
+      error: 'Teleradyoloji izni eklentide yüklü değil. chrome://extensions sayfasında eklentiyi Yenile (Reload) yapıp tekrar deneyin.'
+    };
+  }
+}
+
 async function refreshTabStatus() {
   if (isRunning) return;
   const tab = await getActiveTab();
@@ -173,31 +255,34 @@ async function refreshTabStatus() {
   const info = await ensureContentScriptAndPing(tab);
 
   if (!info.onEnabiz) {
+    tabReady = false;
     setStatus(
       'status-warn',
       'e-Nabız sekmesi açık değil',
       "Önce e-Nabız'ı açıp e-Devlet veya şifrenizle giriş yapın, ardından buradan tek tıkla çekin.",
       true
     );
-    el.btnStart.disabled = true;
+    syncStartButtonState();
     return;
   }
 
   if (!info.loggedIn) {
+    tabReady = false;
     setStatus(
       'status-warn',
       'e-Nabız oturumu bekleniyor',
       'Giriş yaptıktan sonra "Yenile"ye tıklayın veya doğrudan arşivlemeyi başlatın.',
       true
     );
-    el.btnStart.disabled = true;
+    syncStartButtonState();
     return;
   }
 
+  tabReady = true;
   const who = info.patientName ? `${info.patientName} — ` : '';
   const yr = info.yearRange?.min && info.yearRange?.max ? `(${info.yearRange.min}–${info.yearRange.max})` : '';
   setStatus('status-ready', 'e-Nabız oturumu hazır', `${who}Arşiv çekmeye hazır ${yr}`.trim(), false);
-  el.btnStart.disabled = false;
+  syncStartButtonState();
 }
 
 function startTimer() {
@@ -371,8 +456,8 @@ async function downloadRadiologyImages(runId, rawData, options = {}) {
       resetWatchdog(runId);
       const { record, index } = targets[n];
       updateProgressUI(
-        9,
-        TOTAL_STAGES,
+        Math.max(1, activeTotalStages - 1),
+        activeTotalStages,
         `Radyoloji görüntüleri hazırlanıyor (${n + 1}/${targets.length}): ${record.aciklama || ''}`
       );
 
@@ -419,7 +504,11 @@ async function downloadRadiologyImages(runId, rawData, options = {}) {
       const framesBefore = stats.frameCount;
       const jobId = `rad-${runId}-${index}-${Date.now()}`;
       activeRadJobId = jobId;
-      updateProgressUI(9, TOTAL_STAGES, `Radyoloji görüntüleri indiriliyor: ${record.aciklama || ''} (0/${items.length})`);
+      updateProgressUI(
+        Math.max(1, activeTotalStages - 1),
+        activeTotalStages,
+        `Radyoloji görüntüleri indiriliyor: ${record.aciklama || ''} (0/${items.length})`
+      );
 
       let download = null;
       try {
@@ -509,8 +598,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     runRadImageStats.bytes += bytes.byteLength;
     if (msg.total) {
       updateProgressUI(
-        9,
-        TOTAL_STAGES,
+        Math.max(1, activeTotalStages - 1),
+        activeTotalStages,
         `Radyoloji görüntüleri: ${msg.done || runRadImageStats.frameCount}/${msg.total} kesit · ${(runRadImageStats.bytes / 1048576).toFixed(1)} MB`
       );
     }
@@ -519,7 +608,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
 
   if (msg.type === 'RAD_IMG_PROGRESS') {
-    if (msg.label) updateProgressUI(9, TOTAL_STAGES, msg.label);
+    if (msg.label) updateProgressUI(Math.max(1, activeTotalStages - 1), activeTotalStages, msg.label);
     sendResponse({ ok: true });
     return;
   }
@@ -548,7 +637,7 @@ function setRunningState(running) {
     clearWatchdog();
     stopTimer();
     el.btnStart.classList.remove('btn-stop');
-    el.btnStartLabel.textContent = 'Sağlık Arşivimi Çek';
+    syncStartButtonState();
     refreshTabStatus();
   }
 }
@@ -615,7 +704,7 @@ async function finalizeArchive(runId, rawData, options = {}) {
   try {
     if (runId !== currentRunId) return;
 
-    updateProgressUI(9, TOTAL_STAGES, `PDF metinleri tamamlanıyor (${runPdfProcessedCount} adet)...`);
+    updateProgressUI(Math.max(1, activeTotalStages - 1), activeTotalStages, `PDF metinleri tamamlanıyor (${runPdfProcessedCount} adet)...`);
     await runPdfQueue;
     if (runId !== currentRunId) return;
 
@@ -650,7 +739,7 @@ async function finalizeArchive(runId, rawData, options = {}) {
       if (runId !== currentRunId) return;
     }
 
-    updateProgressUI(10, TOTAL_STAGES, 'Markdown klasör yapısı derleniyor...');
+    updateProgressUI(activeTotalStages, activeTotalStages, 'Markdown klasör yapısı derleniyor...');
     const { files, stats } = buildMarkdownArchive(rawData, { labPdfTexts: runLabPdfTexts });
 
     const allEntries = new Map();
@@ -809,6 +898,22 @@ async function handleStartClick() {
     return;
   }
 
+  const selectedSections = getSelectedSections();
+  if (selectedSections.length === 0) {
+    showError('Lütfen en az bir bölüm seçin.');
+    return;
+  }
+
+  const wantRadImages = Boolean(el.optRadImages.checked && selectedSections.includes('radyoloji'));
+  if (wantRadImages) {
+    // Request Teleradyoloji host permission while user gesture is still active
+    const perm = await ensureTeleradyolojiPermission();
+    if (!perm.ok) {
+      showError(perm.error);
+      return;
+    }
+  }
+
   stopRadImageDownload();
 
   const tab = await getActiveTab();
@@ -823,18 +928,20 @@ async function handleStartClick() {
   resetRunBuffers();
 
   const runId = ++currentRunId;
+  activeTotalStages = getExpectedTotalStages(selectedSections);
   const options = {
+    sections: selectedSections,
     startYear: el.startYear.value,
     endYear: el.endYear.value,
     includeReportPdfs: el.optReportPdfs.checked,
     includeLabPdfTimes: el.optLabTimes.checked,
     includeRawPdfs: el.optRawPdfs.checked,
-    includeRadImages: el.optRadImages.checked,
+    includeRadImages: wantRadImages,
     speed: el.requestSpeed.value
   };
 
   setRunningState(true);
-  updateProgressUI(1, TOTAL_STAGES, 'e-Nabız bağlantısı başlatılıyor...');
+  updateProgressUI(1, activeTotalStages, 'e-Nabız bağlantısı başlatılıyor...');
   resetWatchdog(runId);
 
   try {
@@ -848,7 +955,8 @@ async function handleStartClick() {
       resetWatchdog(runId);
 
       if (msg.type === 'EXPORT_PROGRESS') {
-        updateProgressUI(msg.stageIndex || 1, msg.totalStages || TOTAL_STAGES, msg.label || '');
+        if (msg.totalStages) activeTotalStages = msg.totalStages;
+        updateProgressUI(msg.stageIndex || 1, activeTotalStages, msg.label || '');
       } else if (msg.type === 'EXPORT_PDF_BLOB') {
         enqueuePdfBlob(runId, msg, options);
       } else if (msg.type === 'EXPORT_COMPLETE') {
@@ -971,6 +1079,23 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 
 el.btnOpenEnabiz.addEventListener('click', () => chrome.tabs.create({ url: ENABIZ_ZIYARET_URL }));
 el.btnRecheck.addEventListener('click', refreshTabStatus);
+el.presetBtns.forEach((btn) => {
+  btn.addEventListener('click', () => applyScopePreset(btn.dataset.preset));
+});
+el.secCheckboxes.forEach((cb) => {
+  cb.addEventListener('change', () => {
+    if (cb === el.secRadyoloji && !cb.checked) {
+      el.optRadImages.checked = false;
+    }
+    syncStartButtonState();
+  });
+});
+el.optRadImages.addEventListener('change', () => {
+  if (el.optRadImages.checked && el.secRadyoloji) {
+    el.secRadyoloji.checked = true;
+  }
+  syncStartButtonState();
+});
 el.btnStart.addEventListener('click', handleStartClick);
 el.btnDownloadZip.addEventListener('click', handleDownloadZip);
 el.btnSaveFolder.addEventListener('click', handleSaveFolder);
@@ -978,5 +1103,6 @@ el.btnCopyPrompt.addEventListener('click', handleCopyPrompt);
 el.btnCloseModal.addEventListener('click', closeModal);
 el.modalBackdrop.addEventListener('click', closeModal);
 
+syncStartButtonState();
 populateYearDropdowns();
 refreshTabStatus();
