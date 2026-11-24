@@ -13,13 +13,13 @@
 
 *Open-source, zero-backend Chrome Manifest V3 Side Panel extension that exports your Turkish e-Nabız personal health records into a clean, AI-ready Markdown folder structure locally in your browser.*
 
-[Kurulum](#-kurulum-chrome--edge--brave--arc) · [Ekran Görüntüleri](#-ekran-görüntüleri) · [Klasör Yapısı](#-çıktı-klasör-yapısı-enabiz-md-arsiv) · [Mimari](#-mimari) · [Katkıda Bulunun](#-katkıda-bulunun)
+[Kurulum](#kurulum-chrome--edge--brave--arc) · [Ekran Görüntüleri](#ekran-görüntüleri) · [Klasör Yapısı](#çıktı-klasör-yapısı-enabiz-md-arsiv) · [Mimari](#mimari) · [Değişiklik Günlüğü](CHANGELOG.md)
 
 </div>
 
 ---
 
-## 📸 Ekran Görüntüleri
+## Ekran Görüntüleri
 
 | 1. Oturum & Ayarlar | 2. Canlı İlerleme Takibi | 3. Özet, Dosya Önizleme & İndirme |
 | :---: | :---: | :---: |
@@ -27,7 +27,7 @@
 
 ---
 
-## ✨ Öne Çıkan Özellikler
+## Öne Çıkan Özellikler
 
 - **Tek Tıkla Tam Arşiv:** Ziyaretler, ICD-10 tanılar, işlemler, yazılan/alınan reçeteler, çoklu ve tekil tahlil panelleri (`Tekil Tetkikler`), COVID-19 testleri, radyoloji raporları, resmi sağlık raporları, aşı takvimi, kronik taramalar, randevular ve tıbbi malzemelerin tamamını çeker.
 - **Çevrimdışı Türkçe PDF Çözümleme:** Resmi sağlık raporlarının (İstirahat, Durum Bildirir, Sürücü, Sağlık Kurulu vb.) PDF içeriklerini ve tahlil panellerinin saat bilgilerini eklenti içine gömülü Mozilla [`pdfjs-dist`](vendor/README.txt) ile tamamen tarayıcı içinde UTF-8 olarak çözümler; e-imza ve tekrarlayan kimlik alt/üst bilgilerini temizler.
@@ -37,7 +37,7 @@
 
 ---
 
-## 🔒 İzinler ve Gizlilik Denetimi
+## İzinler ve Gizlilik Denetimi
 
 Bu proje **sıfır telemetri**, **sıfır harici sunucu** ve **salt okunur (read-only)** ilkeleriyle geliştirilmiştir. Detaylar için [SECURITY.md](SECURITY.md) dosyasını inceleyebilirsiniz.
 
@@ -51,7 +51,7 @@ Bu proje **sıfır telemetri**, **sıfır harici sunucu** ve **salt okunur (read
 
 ---
 
-## 📂 Çıktı Klasör Yapısı (`enabiz-md-arsiv/`)
+## Çıktı Klasör Yapısı (`enabiz-md-arsiv/`)
 
 ```text
 enabiz-md-arsiv/
@@ -72,7 +72,7 @@ enabiz-md-arsiv/
 
 ---
 
-## 🚀 Kurulum (Chrome / Edge / Brave / Arc)
+## Kurulum (Chrome / Edge / Brave / Arc)
 
 1. Bu repoyu bilgisayarınıza indirin:
    ```bash
@@ -86,13 +86,13 @@ enabiz-md-arsiv/
 
 ---
 
-## 🧠 Yapay Zeka ile Analiz
+## Yapay Zeka ile Analiz
 
 Arşiviniz indirildikten sonra yan paneldeki **"Yapay Zeka Analiz Prompt'u Kopyala"** butonuna basın ve `enabiz-md-arsiv/` klasöründeki `.md` dosyalarıyla birlikte tercih ettiğiniz yapay zeka asistanına gönderin. Markdown dosyaları gereksiz HTML/hukuki tekrar metinlerinden arındırıldığı için bağlam penceresini çok verimli kullanır.
 
 ---
 
-## 🏗 Mimari
+## Mimari
 
 ```text
 https://enabiz.gov.tr (Aktif Oturum)
@@ -118,27 +118,6 @@ src/content.js ──(IPC + PDF chunk stream)──► src/sidepanel.js
 
 ---
 
-## 🤝 Katkıda Bulunun
-
-Katkılarınız çok değerli! Başlamak için:
-- Rehber: [CONTRIBUTING.md](CONTRIBUTING.md)
-- Davranış Kuralları: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
-- Değişiklik Günlüğü: [CHANGELOG.md](CHANGELOG.md)
-- Hata Bildirimi / Özellik İsteği: [Issues](https://github.com/atahansocial/enabiz-md-exporter/issues)
-
-Testleri yerel olarak çalıştırmak için (`npm install` gerekmez, Node.js 20+ yeterlidir):
-```bash
-npm test
-```
-
-### Yol Haritası (Roadmap)
-- [ ] Chrome Web Store yayını için paketleme ve inceleme süreci
-- [ ] Tahlil parametreleri için yıl bazlı trend karşılaştırma özeti (`07-trendler.md`)
-- [ ] İngilizce arayüz seçeneği (TR / EN)
-- [x] E-Nabız arayüz değişikliklerine karşı otomatik DOM seçici testleri (`tests/verify-parsers.mjs`)
-
----
-
-## 📄 Lisans
+## Lisans
 
 Bu proje [MIT Lisansı](LICENSE) ile lisanslanmıştır.
