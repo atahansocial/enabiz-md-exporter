@@ -44,9 +44,12 @@ jobs:
           node --check src/sidepanel.js
           node --check src/lib/pdf-extractor.js
           node --check src/lib/markdown-builder.js
+          node --check src/lib/teleradyoloji.js
+          node --check src/lib/teleradyoloji-page.js
           node --check src/lib/zip.js
           node --check tests/verify-builder.mjs
           node --check tests/verify-parsers.mjs
+          node --check tests/verify-teleradyoloji.mjs
 
       - name: Run synthetic Markdown, ZIP & DOM parser verification suites
         run: npm test

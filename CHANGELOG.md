@@ -2,6 +2,19 @@
 
 Bu proje [SemVer](https://semver.org/) sürümleme kurallarını takip eder.
 
+## [1.3.0] - 2026-11-24
+
+### Yeni Özellik
+- **Radyoloji Görüntüleri (tüm seriler/kesitler)**: Ayarlara "Radyoloji görüntülerini de indir" seçeneği eklendi. e-Nabız'daki her radyoloji çalışması için taze bir Teleradyoloji görüntüleme bağlantısı (OTAC) alınır; `CheckOTAC` ile kısa ömürlü erişim anahtarına çevrilir ve WADO servisinden **tüm serilerin tüm kesitleri orijinal çözünürlükte JPEG** olarak indirilir.
+- **Görüntü Arşivi Düzeni**: Kesitler `radyoloji_goruntuleri/<tarih>_<açıklama>_<sıra>/seri-XX_<seri>/001.jpg` biçiminde kaydedilir. `00-dizin.md` çalışma/seri/kesit sayılarını ve boyutları listeler; `03-radyoloji.md` her çalışmanın altına görüntü klasörünü bağlar.
+- **Arka Plan Görüntüleyici Sekmesi**: İndirme, e-Nabız oturumundan bağımsız çalışan geçici bir Teleradyoloji sekmesinde yapılır; iş bitince sekme otomatik kapatılır. İptal (Durdur) görüntü indirmeyi de durdurur.
+- **Dayanıklılık**: Kesitler 3 eşzamanlı istek, 30 sn zaman aşımı ve 429/5xx'te artan bekleme ile indirilir; büyük görüntüler parçalı aktarılır. Başarısız kesitler arşiv uyarılarında raporlanır, indirme kalan bölümlerle devam eder.
+- **UI**: Sonuç ekranına "Radyo. Kesiti" istatistiği eklendi; binlerce JPEG dosya ağacı yerine tek satırlık `radyoloji_goruntuleri/ (N görüntü)` özeti gösterilir ve dizin dosyası önizlenebilir.
+
+### Notlar
+- Bu özellik varsayılan olarak açıktır. İstenmeyen durumlarda ayarlardan kapatılabilir; kapatıldığında davranış v1.2.1 ile aynıdır.
+- Görüntü indirme sırasında sekme kapatılmamalıdır; yan panel açık kalmalıdır. Büyük arşivlerde ZIP oluşturma süresi ve bellek kullanımı artar.
+
 ## [1.2.1] - 2026-11-24
 
 ### Arayüz

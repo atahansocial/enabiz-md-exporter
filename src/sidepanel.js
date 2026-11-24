@@ -1,6 +1,17 @@
 import { buildMarkdownArchive } from './lib/markdown-builder.js';
 import { base64ToUint8Array, extractPdfText } from './lib/pdf-extractor.js';
 import { createZipBlob } from './lib/zip.js';
+import {
+  extractOtac,
+  enumerateWorkItem,
+  TELERADYOLOJI_ORIGIN,
+  TELERADYOLOJI_API_BASE
+} from './lib/teleradyoloji.js';
+import {
+  radiologyPageAuth,
+  radiologyPageDownload,
+  enabizFetchViewerLink
+} from './lib/teleradyoloji-page.js';
 
 const ENABIZ_ZIYARET_URL = 'https://enabiz.gov.tr/Home/Ziyaretlerim';
 const TOTAL_STAGES = 10;
@@ -19,6 +30,7 @@ const el = {
   optLabTimes: document.getElementById('optLabTimes'),
   optRawPdfs: document.getElementById('optRawPdfs'),
   optRawJson: document.getElementById('optRawJson'),
+  optRadImages: document.getElementById('optRadImages'),
   requestSpeed: document.getElementById('requestSpeed'),
   btnStart: document.getElementById('btnStart'),
   btnStartLabel: document.getElementById('btnStartLabel'),
@@ -66,6 +78,15 @@ let runReportExtracts = new Map();
 let runRadExtracts = new Map();
 let runRawPdfFiles = [];
 
+// Radyoloji görüntüleri (Teleradyoloji WADO)
+const RAD_IMG_PREFIX = 'radyoloji_goruntuleri/';
+const TELERADYOLOJI_VIEWER_URL = `${TELERADYOLOJI_ORIGIN}/robots.txt`; // nginx 404 sayfası: SPA çalışmaz, origin doğru kalır
+let runRadImageFiles = [];
+let runRadImageStats = null;
+let radImageTabId = null;
+let activeRadJobId = null;
+const radChunkBuffers = new Map();
+
 function populateYearDropdowns() {
   const currentYear = new Date().getFullYear();
   for (let y = 2014; y <= currentYear; y++) {
@@ -87,6 +108,14 @@ function formatElapsed(ms) {
   const m = String(Math.floor(sec / 60)).padStart(2, '0');
   const s = String(sec % 60).padStart(2, '0');
   return `${m}:${s}`;
+}
+
+function formatBytes(bytes) {
+  const n = Number(bytes) || 0;
+  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(2)} GB`;
+  if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(1)} MB`;
+  if (n >= 1024) return `${(n / 1024).toFixed(0)} KB`;
+  return `${n} B`;
 }
 
 function setStatus(mode, title, desc, showOpenBtn = false) {
@@ -210,7 +239,279 @@ function resetRunBuffers() {
   runReportExtracts = new Map();
   runRadExtracts = new Map();
   runRawPdfFiles = [];
+  runRadImageFiles = [];
+  runRadImageStats = null;
+  radChunkBuffers.clear();
 }
+
+// ---------------------------------------------------------------------------
+// Radyoloji görüntüleri (Teleradyoloji)
+// ---------------------------------------------------------------------------
+
+function closeRadImageTab() {
+  if (radImageTabId != null) {
+    const id = radImageTabId;
+    radImageTabId = null;
+    try {
+      chrome.tabs.remove(id).catch(() => {});
+    } catch {}
+  }
+}
+
+function stopRadImageDownload() {
+  const tabId = radImageTabId;
+  if (tabId != null && activeRadJobId) {
+    chrome.tabs.sendMessage(tabId, { type: 'RAD_IMG_CANCEL', jobId: activeRadJobId, runId: currentRunId }).catch(() => {});
+  }
+  activeRadJobId = null;
+  closeRadImageTab();
+}
+
+async function waitForTabReady(tabId, timeoutMs = 30000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const tab = await chrome.tabs.get(tabId).catch(() => null);
+    if (!tab) throw new Error('Görüntüleyici sekmesi kapandı.');
+    const url = tab.pendingUrl || tab.url || '';
+    if (url && url !== 'about:blank' && tab.status === 'complete') return;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error('Görüntüleyici sekmesi zaman aşımına uğradı.');
+}
+
+async function ensureRadImageTab() {
+  if (radImageTabId != null) {
+    try {
+      const tab = await chrome.tabs.get(radImageTabId);
+      if (tab && tab.url && tab.url.startsWith(TELERADYOLOJI_ORIGIN)) {
+        if (tab.status !== 'complete') await waitForTabReady(radImageTabId);
+        return radImageTabId;
+      }
+    } catch {}
+    closeRadImageTab();
+  }
+  const tab = await chrome.tabs.create({ url: TELERADYOLOJI_VIEWER_URL, active: false });
+  radImageTabId = tab.id;
+  await waitForTabReady(radImageTabId);
+  const current = await chrome.tabs.get(radImageTabId);
+  if (!current?.url || !current.url.startsWith(TELERADYOLOJI_ORIGIN)) {
+    closeRadImageTab();
+    throw new Error('Görüntüleyici beklenmeyen bir adrese yönlendi.');
+  }
+  return radImageTabId;
+}
+
+async function runInTeleradyolojiTab(tabId, func, args) {
+  try {
+    const results = await chrome.scripting.executeScript({ target: { tabId }, func, args });
+    return results?.[0]?.result;
+  } catch (err) {
+    // Sekme kapanmış/yönlenmiş olabilir; bir sonraki çalışmada yeniden açılır.
+    closeRadImageTab();
+    throw err;
+  }
+}
+
+async function fetchViewerLinkForAccession(accession) {
+  if (activeTabId == null) throw new Error('e-Nabız sekmesi bulunamadı.');
+  let results;
+  try {
+    results = await chrome.scripting.executeScript({
+      target: { tabId: activeTabId },
+      func: enabizFetchViewerLink,
+      args: [accession]
+    });
+  } catch (err) {
+    throw new Error(`e-Nabız sekmesine erişilemedi: ${(err && err.message) || err}`);
+  }
+  const result = results?.[0]?.result;
+  if (!result?.ok || !result.link) {
+    throw new Error(result?.error || 'Görüntüleyici bağlantısı alınamadı.');
+  }
+  return result.link;
+}
+
+async function downloadRadiologyImages(runId, rawData) {
+  const targets = (rawData.radyoloji || [])
+    .map((record, index) => ({ record, index }))
+    .filter(({ record }) => record && record.accession);
+  if (targets.length === 0) return;
+
+  const stats = {
+    studyCount: 0,
+    seriesCount: 0,
+    frameCount: 0,
+    failedFrames: 0,
+    bytes: 0,
+    errors: []
+  };
+  runRadImageStats = stats;
+  rawData.radyolojiImages = stats;
+
+  const label = (r) => `${r.tarih || ''} ${r.aciklama || ''}`.trim();
+
+  try {
+    await ensureRadImageTab();
+  } catch (err) {
+    stats.errors.push(`Görüntüleyici açılamadı: ${(err && err.message) || err}`);
+    return;
+  }
+
+  try {
+    for (let n = 0; n < targets.length; n += 1) {
+      if (runId !== currentRunId) return;
+      const { record, index } = targets[n];
+      updateProgressUI(
+        9,
+        TOTAL_STAGES,
+        `Radyoloji görüntüleri hazırlanıyor (${n + 1}/${targets.length}): ${record.aciklama || ''}`
+      );
+
+      let link = '';
+      try {
+        link = await fetchViewerLinkForAccession(record.accession);
+      } catch (err) {
+        stats.errors.push(`${label(record)}: ${(err && err.message) || err}`);
+        continue;
+      }
+      const otac = extractOtac(link);
+      if (!otac) {
+        stats.errors.push(`${label(record)}: görüntüleyici bağlantısında OTAC bulunamadı.`);
+        continue;
+      }
+
+      let auth = null;
+      try {
+        const tabId = await ensureRadImageTab();
+        auth = await runInTeleradyolojiTab(tabId, radiologyPageAuth, [
+          { base: TELERADYOLOJI_API_BASE, otac }
+        ]);
+      } catch (err) {
+        stats.errors.push(`${label(record)}: görüntüleyici oturumu açılamadı (${(err && err.message) || err}).`);
+        continue;
+      }
+      if (!auth?.ok) {
+        stats.errors.push(`${label(record)}: ${auth?.error || 'görüntüleyici oturumu açılamadı.'}`);
+        console.warn('[radyoloji] OTAC/çalışma alınamadı:', auth?.status, auth?.error || '');
+        continue;
+      }
+
+      const plan = enumerateWorkItem(
+        auth.workItem,
+        { tarih: record.tarih, aciklama: record.aciklama, index },
+        TELERADYOLOJI_ORIGIN
+      );
+      if (plan.warnings.length) stats.errors.push(`${label(record)}: ${plan.warnings.join(' ')}`);
+      const items = plan.frames.filter((f) => f.url).map((f) => ({ path: f.path, url: f.url }));
+      console.info('[radyoloji]', record.aciklama || record.tarih, '→', plan.studies.length, 'çalışma,', items.length, 'kesit');
+      if (items.length === 0) continue;
+
+      const bytesBefore = stats.bytes;
+      const framesBefore = stats.frameCount;
+      const jobId = `rad-${runId}-${index}-${Date.now()}`;
+      activeRadJobId = jobId;
+      updateProgressUI(9, TOTAL_STAGES, `Radyoloji görüntüleri indiriliyor: ${record.aciklama || ''} (0/${items.length})`);
+
+      let download = null;
+      try {
+        const tabId = await ensureRadImageTab();
+        download = await runInTeleradyolojiTab(tabId, radiologyPageDownload, [
+          { runId, jobId, items, token: auth.token, concurrency: 3, delayMs: 60 }
+        ]);
+      } catch (err) {
+        stats.errors.push(`${label(record)}: görüntü indirme hatası (${(err && err.message) || err}).`);
+      } finally {
+        activeRadJobId = null;
+      }
+
+      if (runId !== currentRunId) return;
+
+      const downloaded = stats.frameCount - framesBefore;
+      const seriesCount = plan.studies.reduce((sum, s) => sum + (s.seriesCount || 0), 0);
+      if (downloaded > 0) {
+        stats.studyCount += 1;
+        stats.seriesCount += seriesCount;
+        record.images = {
+          folder: plan.studies[0]?.folder || '',
+          count: downloaded,
+          seriesCount,
+          bytes: stats.bytes - bytesBefore,
+          failed: download?.failed || 0
+        };
+      } else if (!download) {
+        stats.errors.push(`${label(record)}: hiç görüntü indirilemedi.`);
+      }
+      if (download?.cancelled) return;
+    }
+  } finally {
+    closeRadImageTab();
+  }
+}
+
+// Görüntüleyici sekmesinden gelen görüntü parçalarını topla.
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (!msg || typeof msg !== 'object') return;
+  if (!['RAD_IMG_FILE', 'RAD_IMG_CHUNK', 'RAD_IMG_PROGRESS', 'RAD_IMG_ERROR'].includes(msg.type)) return;
+  if (msg.runId !== currentRunId || !runRadImageStats) {
+    sendResponse({ ok: false });
+    return;
+  }
+
+  if (msg.type === 'RAD_IMG_FILE' || msg.type === 'RAD_IMG_CHUNK') {
+    const path = String(msg.path || '');
+    if (!path.startsWith(RAD_IMG_PREFIX)) {
+      sendResponse({ ok: false });
+      return;
+    }
+
+    let base64 = msg.base64;
+    if (msg.type === 'RAD_IMG_CHUNK') {
+      const buffer = radChunkBuffers.get(path) || {
+        parts: new Array(msg.chunkCount),
+        received: 0,
+        count: msg.chunkCount
+      };
+      buffer.parts[msg.chunkIndex] = msg.data;
+      buffer.received += 1;
+      if (buffer.received < buffer.count) {
+        radChunkBuffers.set(path, buffer);
+        sendResponse({ ok: true });
+        return;
+      }
+      radChunkBuffers.delete(path);
+      base64 = buffer.parts.join('');
+    }
+
+    const bytes = base64ToUint8Array(base64);
+    runRadImageFiles.push({ path, content: bytes });
+    runRadImageStats.frameCount += 1;
+    runRadImageStats.bytes += bytes.byteLength;
+    if (msg.total) {
+      updateProgressUI(
+        9,
+        TOTAL_STAGES,
+        `Radyoloji görüntüleri: ${msg.done || runRadImageStats.frameCount}/${msg.total} kesit · ${(runRadImageStats.bytes / 1048576).toFixed(1)} MB`
+      );
+    }
+    sendResponse({ ok: true });
+    return;
+  }
+
+  if (msg.type === 'RAD_IMG_PROGRESS') {
+    if (msg.label) updateProgressUI(9, TOTAL_STAGES, msg.label);
+    sendResponse({ ok: true });
+    return;
+  }
+
+  if (msg.type === 'RAD_IMG_ERROR') {
+    runRadImageStats.failedFrames += 1;
+    if (runRadImageStats.errors.length < 12) {
+      const detail = msg.error ? ` (${msg.error})` : '';
+      runRadImageStats.errors.push(`${msg.path || 'görüntü'} indirilemedi${detail}`);
+    }
+    sendResponse({ ok: true });
+  }
+});
 
 function setRunningState(running) {
   isRunning = running;
@@ -241,6 +542,7 @@ function disconnectActivePort() {
 }
 
 function cancelCurrentRun(errorMessage = '') {
+  stopRadImageDownload();
   currentRunId += 1; // invalidates any in-flight messages or queued PDF tasks from old run
   if (activePort) {
     try {
@@ -288,7 +590,7 @@ function enqueuePdfBlob(runId, msg, opts) {
   });
 }
 
-async function finalizeArchive(runId, rawData) {
+async function finalizeArchive(runId, rawData, options = {}) {
   if (runId !== currentRunId) return;
 
   updateProgressUI(9, TOTAL_STAGES, `PDF metinleri tamamlanıyor (${runPdfProcessedCount} adet)...`);
@@ -321,6 +623,11 @@ async function finalizeArchive(runId, rawData) {
     }
   }
 
+  if (options.includeRadImages) {
+    await downloadRadiologyImages(runId, rawData);
+    if (runId !== currentRunId) return;
+  }
+
   updateProgressUI(10, TOTAL_STAGES, 'Markdown klasör yapısı derleniyor...');
   const { files, stats } = buildMarkdownArchive(rawData, { labPdfTexts: runLabPdfTexts });
 
@@ -330,6 +637,9 @@ async function finalizeArchive(runId, rawData) {
   }
   for (const pf of runRawPdfFiles) {
     allEntries.set(pf.path, pf.content);
+  }
+  for (const rf of runRadImageFiles) {
+    allEntries.set(rf.path, rf.content);
   }
   if (el.optRawJson.checked) {
     allEntries.set('enabiz_ham_veri.json', JSON.stringify(rawData, null, 2));
@@ -350,7 +660,13 @@ function renderResults(entries, stats) {
     (sum, v) => sum + (typeof v === 'string' ? encoder.encode(v).length : v.byteLength),
     0
   );
-  el.resultMeta.textContent = `${entries.size} dosya · ${(totalBytes / 1024).toFixed(0)} KB · ${el.progressTimer.textContent}`;
+  if (totalBytes > 1.5 * 1024 ** 3) {
+    stats.warnings = stats.warnings || [];
+    stats.warnings.push(
+      'Arşiv 1,5 GB üzerinde. ZIP oluşturma bellek/2 GB sınırı nedeniyle başarısız olabilir; "Klasöre Kaydet" seçeneğini kullanmanız önerilir.'
+    );
+  }
+  el.resultMeta.textContent = `${entries.size} dosya · ${formatBytes(totalBytes)} · ${el.progressTimer.textContent}`;
 
   const hasWarnings = Boolean(stats.warnings?.length);
   el.resultBadge.textContent = hasWarnings ? 'Kısmi Arşiv (Uyarı Var)' : 'Arşiv Hazır';
@@ -376,6 +692,7 @@ function renderResults(entries, stats) {
     { val: String(stats.totalIslemRows), lbl: 'Tıbbi İşlem' },
     { val: `${stats.labRowsCount} (${stats.oorCount}!)`, lbl: 'Tahlil (Ref. Dışı)' },
     { val: String(stats.radCount), lbl: 'Radyoloji' },
+    { val: String(stats.radImageCount || 0), lbl: 'Radyo. Kesiti' },
     { val: String(stats.raporCount), lbl: 'Sağlık Raporu' },
     { val: String(stats.receteCount), lbl: 'Reçete' }
   ];
@@ -393,9 +710,28 @@ function renderResults(entries, stats) {
   }
 
   el.fileTree.textContent = '';
+  const openPreview = (path, content, byteLen, sourceRow) => {
+    lastFocusedElement = sourceRow;
+    el.modalTitle.textContent = path;
+    el.modalContent.textContent =
+      typeof content === 'string'
+        ? content
+        : `[İkili dosya — ${formatBytes(byteLen)}]`;
+    el.previewModal.classList.remove('hidden');
+    el.btnCloseModal.focus();
+  };
+
+  let hiddenImageCount = 0;
+  let hiddenImageBytes = 0;
+  const imageIndexPath = `${RAD_IMG_PREFIX}00-dizin.md`;
   for (const [path, content] of entries.entries()) {
     const byteLen = typeof content === 'string' ? encoder.encode(content).length : content.byteLength;
-    const sizeStr = byteLen >= 1024 ? `${(byteLen / 1024).toFixed(1)} KB` : `${byteLen} B`;
+
+    if (path.startsWith(RAD_IMG_PREFIX) && path !== imageIndexPath) {
+      hiddenImageCount += 1;
+      hiddenImageBytes += byteLen;
+      continue;
+    }
 
     const row = document.createElement('button');
     row.type = 'button';
@@ -404,18 +740,26 @@ function renderResults(entries, stats) {
     pathSpan.textContent = path;
     const sizeSpan = document.createElement('span');
     sizeSpan.className = 'file-size';
-    sizeSpan.textContent = sizeStr;
+    sizeSpan.textContent = formatBytes(byteLen);
     row.append(pathSpan, sizeSpan);
 
+    row.addEventListener('click', () => openPreview(path, content, byteLen, row));
+    el.fileTree.appendChild(row);
+  }
+
+  if (hiddenImageCount > 0) {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'file-item file-item-summary';
+    const pathSpan = document.createElement('span');
+    pathSpan.textContent = `${RAD_IMG_PREFIX} (${hiddenImageCount} görüntü)`;
+    const sizeSpan = document.createElement('span');
+    sizeSpan.className = 'file-size';
+    sizeSpan.textContent = formatBytes(hiddenImageBytes);
+    row.append(pathSpan, sizeSpan);
+    const indexContent = entries.get(imageIndexPath);
     row.addEventListener('click', () => {
-      lastFocusedElement = row;
-      el.modalTitle.textContent = path;
-      el.modalContent.textContent =
-        typeof content === 'string'
-          ? content
-          : `[İkili PDF dosyası — ${(byteLen / 1024).toFixed(1)} KB]`;
-      el.previewModal.classList.remove('hidden');
-      el.btnCloseModal.focus();
+      if (indexContent !== undefined) openPreview(imageIndexPath, indexContent, indexContent.length, row);
     });
     el.fileTree.appendChild(row);
   }
@@ -440,6 +784,8 @@ async function handleStartClick() {
     return;
   }
 
+  stopRadImageDownload();
+
   const tab = await getActiveTab();
   const info = await ensureContentScriptAndPing(tab);
   if (!info.onEnabiz || !info.loggedIn) {
@@ -458,6 +804,7 @@ async function handleStartClick() {
     includeReportPdfs: el.optReportPdfs.checked,
     includeLabPdfTimes: el.optLabTimes.checked,
     includeRawPdfs: el.optRawPdfs.checked,
+    includeRadImages: el.optRadImages.checked,
     speed: el.requestSpeed.value
   };
 
@@ -481,7 +828,7 @@ async function handleStartClick() {
         enqueuePdfBlob(runId, msg, options);
       } else if (msg.type === 'EXPORT_COMPLETE') {
         clearWatchdog();
-        finalizeArchive(runId, msg.data).catch((err) => {
+        finalizeArchive(runId, msg.data, options).catch((err) => {
           if (runId === currentRunId) {
             setRunningState(false);
             disconnectActivePort();
@@ -490,6 +837,7 @@ async function handleStartClick() {
         });
       } else if (msg.type === 'EXPORT_ERROR') {
         clearWatchdog();
+        stopRadImageDownload();
         disconnectActivePort();
         setRunningState(false);
         el.progressCard.classList.add('hidden');
@@ -582,6 +930,10 @@ window.addEventListener('beforeunload', (e) => {
     e.preventDefault();
     e.returnValue = '';
   }
+});
+
+window.addEventListener('pagehide', () => {
+  closeRadImageTab();
 });
 
 document.addEventListener('keydown', (e) => {

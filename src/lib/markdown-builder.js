@@ -32,6 +32,14 @@ export function mdEsc(val) {
   return cleanStr(val).replace(/\|/g, '\\|').replace(/\n/g, ' ');
 }
 
+export function formatByteSize(bytes) {
+  const n = Number(bytes) || 0;
+  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(2)} GB`;
+  if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(1)} MB`;
+  if (n >= 1024) return `${(n / 1024).toFixed(0)} KB`;
+  return `${n} B`;
+}
+
 export function parseTrFloat(val) {
   if (!val) return null;
   const s = String(val).trim().replace(/\s+/g, '');
@@ -360,10 +368,14 @@ function buildTahliller(data, labPdfTexts, oorList) {
 
 function buildRadyoloji(data) {
   const rads = data.radyoloji || [];
+  const imageFrameCount = data.radyolojiImages?.frameCount || 0;
   const lines = [
     '# Radyolojik Görüntüler ve Raporlar',
     '',
     `Toplam **${rads.length}** radyolojik çalışma (sistemde yazılı raporu bulunanların tamamı aşağıda temizlenmiş olarak yer almaktadır).`,
+    ...(imageFrameCount > 0
+      ? [`Ayrıca **${imageFrameCount}** görüntü kesiti \`radyoloji_goruntuleri/\` klasörüne indirildi (dizin: [00-dizin.md](radyoloji_goruntuleri/00-dizin.md)).`]
+      : []),
     ''
   ];
   const seenTexts = new Map();
@@ -386,6 +398,13 @@ function buildRadyoloji(data) {
     const proto = cleaned.protokol || cleaned.erisimNo || acc;
     if (proto) lines.push(`- **Protokol / Erişim No:** \`${proto}\``);
     if (cleaned.dosyaNo) lines.push(`- **Dosya No:** \`${cleaned.dosyaNo}\``);
+    if (r.images?.count) {
+      const seriesPart = r.images.seriesCount ? `${r.images.seriesCount} seri, ` : '';
+      const failPart = r.images.failed ? `, ${r.images.failed} kesit indirilemedi` : '';
+      lines.push(
+        `- **Görüntüler:** ${seriesPart}${r.images.count} kesit${failPart} (${formatByteSize(r.images.bytes)}) → \`${r.images.folder}/\``
+      );
+    }
 
     if (body) {
       repCount += 1;
@@ -407,6 +426,31 @@ function buildRadyoloji(data) {
   });
 
   return { markdown: lines.join('\n'), repCount };
+}
+
+function buildRadiologyImageIndex(data) {
+  const summary = data.radyolojiImages || {};
+  const studies = (data.radyoloji || []).filter((r) => r.images?.count);
+  const totalFrames = summary.frameCount || studies.reduce((sum, r) => sum + r.images.count, 0);
+  const totalBytes = summary.bytes || studies.reduce((sum, r) => sum + (r.images.bytes || 0), 0);
+  const lines = [
+    '# Radyoloji Görüntü Arşivi',
+    '',
+    `Toplam **${studies.length}** çalışma, **${totalFrames}** kesit, **${formatByteSize(totalBytes)}**.`,
+    '',
+    '| Tarih | Açıklama | Kurum | Seri | Kesit | Boyut | Klasör |',
+    '|---|---|---|---:|---:|---:|---|'
+  ];
+  for (const r of studies) {
+    lines.push(
+      `| ${mdEsc(r.tarih)} | ${mdEsc(r.aciklama)} | ${mdEsc(r.hastane)} | ${r.images.seriesCount || ''} | ${r.images.count} | ${formatByteSize(r.images.bytes)} | \`${mdEsc(r.images.folder)}/\` |`
+    );
+  }
+  if (summary.failedFrames) {
+    lines.push('', `> **Not:** ${summary.failedFrames} kesit indirilemedi; ayrıntılar arşiv README uyarılarında yer alır.`);
+  }
+  lines.push('', '_Görüntüler Teleradyoloji WADO servisinden orijinal çözünürlükte JPEG (gerekli durumlarda DICOM) olarak alınmıştır._');
+  return lines.join('\n');
 }
 
 function buildRaporlar(data) {
@@ -875,6 +919,9 @@ function buildReadme(data, stats) {
     `| [01-tanilar.md](01-tanilar.md) | ICD-10 tanı sıklığı + Hastalıklarım tam listesi | ${stats.uniqueDiagnosesCount} benzersiz tanı · ${stats.hastaliklarimCount} hastalık satırı |`,
     `| [02-tahliller.md](02-tahliller.md) | Referans dışı tahliller + tüm ${stats.panelCount} tahlil paneli | ${stats.labRowsCount} parametre (${stats.oorCount} referans dışı) |`,
     `| [03-radyoloji.md](03-radyoloji.md) | Radyolojik incelemeler ve temizlenmiş tam rapor metinleri | ${stats.radCount} inceleme (${stats.radReportCount} yazılı rapor) |`,
+    ...(stats.radImageCount > 0
+      ? [`| [radyoloji_goruntuleri/00-dizin.md](radyoloji_goruntuleri/00-dizin.md) | Radyoloji görüntü kesitleri (JPEG, orijinal çözünürlük) | ${stats.radImageCount} kesit · ${formatByteSize(stats.radImageBytes)} |`]
+      : []),
     `| [04-raporlar.md](04-raporlar.md) | Sağlık raporları listesi + ${stats.raporPdfExtractedCount} resmi PDF'in temizlenmiş klinik özeti | ${stats.raporCount} rapor (${stats.raporPdfExtractedCount} tam içerik) |`,
     `| [05-ilaclar-ve-receteler.md](05-ilaclar-ve-receteler.md) | Reçete detayları (yazılan/alınan) + İlaçlarım geçmişi | ${stats.receteCount} reçete · ${stats.ilaclarimCount} ilaç satırı |`,
     `| [06-asi-takip-malzeme.md](06-asi-takip-malzeme.md) | Aşı takvimi, kronik tarama bulguları, randevu, tıbbi malzemeler | ${stats.asiCount} aşı · ${stats.takipCount} takip · ${stats.malzemeCount} malzeme |`,
@@ -1035,6 +1082,12 @@ export function buildMarkdownArchive(rawData, opts = {}) {
   if (failedVisitDetails.length > 0) {
     warnings.push(`${failedVisitDetails.length} ziyaretin detayı çekilemedi.`);
   }
+  for (const imageError of data.radyolojiImages?.errors || []) {
+    warnings.push(`Radyoloji görüntüleri: ${imageError}`);
+  }
+  if ((data.radyolojiImages?.failedFrames || 0) > 0) {
+    warnings.push(`${data.radyolojiImages.failedFrames} radyoloji kesiti indirilemedi.`);
+  }
 
   const stats = {
     totalVisits: visits.length,
@@ -1052,6 +1105,10 @@ export function buildMarkdownArchive(rawData, opts = {}) {
     oorCount: oorList.length,
     radCount: (data.radyoloji || []).length,
     radReportCount,
+    radImageCount: data.radyolojiImages?.frameCount || 0,
+    radImageBytes: data.radyolojiImages?.bytes || 0,
+    radImageStudyCount: data.radyolojiImages?.studyCount || 0,
+    radImageFailedCount: data.radyolojiImages?.failedFrames || 0,
     raporCount: raporlar.length,
     raporPdfCount: raporlar.filter((r) => Boolean(r.pdf)).length,
     raporPdfExtractedCount: raporlar.filter((r) => Boolean(r.pdf?.extractedText)).length,
@@ -1075,6 +1132,9 @@ export function buildMarkdownArchive(rawData, opts = {}) {
   files.set('01-tanilar.md', buildTanilar(data, stats));
   files.set('02-tahliller.md', buildTahliller(data, labPdfTexts, oorList));
   files.set('03-radyoloji.md', radMd);
+  if (stats.radImageCount > 0) {
+    files.set('radyoloji_goruntuleri/00-dizin.md', buildRadiologyImageIndex(data));
+  }
   files.set('04-raporlar.md', buildRaporlar(data));
   files.set('05-ilaclar-ve-receteler.md', buildIlaclar(data));
   files.set('06-asi-takip-malzeme.md', buildAsiTakipMalzeme(data));

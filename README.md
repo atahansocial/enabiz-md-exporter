@@ -36,6 +36,7 @@
 - **Çevrimdışı Türkçe PDF Çözümleme:** Resmi sağlık raporlarının (İstirahat, Durum Bildirir, Sürücü, Sağlık Kurulu vb.) PDF içeriklerini ve tahlil panellerinin saat bilgilerini eklenti içine gömülü Mozilla [`pdfjs-dist`](vendor/README.txt) ile tamamen tarayıcı içinde UTF-8 olarak çözümler; e-imza ve tekrarlayan kimlik alt/üst bilgilerini temizler.
 - **Referans Dışı Otomatik Sınıflandırma:** Tahlil sonuçlarını referans aralıklarına göre otomatik olarak `Yüksek ↑`, `Düşük ↓`, `Referans Dışı` ve `Normal` olarak etiketler.
 - **ZIP veya Doğrudan Klasör Kaydı:** İster tek bir `enabiz-md-arsiv-YYYY-AA-GG.zip` dosyası indirin, isterseniz File System Access API ile doğrudan diskinizde `enabiz-md-arsiv/` klasörü oluşturun.
+- **Radyoloji Görüntüleri (Tüm Kesitler):** İsteğe bağlı olarak BT, MR, röntgen, US ve mamografi çalışmalarının **tüm serilerini ve kesitlerini** Teleradyoloji WADO servisinden orijinal çözünürlükte JPEG olarak indirir; `radyoloji_goruntuleri/` altında tarih/açıklama bazlı klasörlere yazar ve `00-dizin.md` ile indeksler. Arşiv boyutunu artırabilir; ayarlardan kapatılabilir.
 - **Sunucu Dostu İstek Temposu:** "Hızlı / Dengeli / Yavaş" modları ile istekler arası bekleme süresini seçin. Tüm istekler tek bir slot kuyruğundan geçer; 429/5xx durumunda tempo otomatik yavaşlar ve `Retry-After` başlığına uyulur.
 - **Yapay Zeka Uyumlu:** Dosya içi önizleme ve tek tıkla **"Yapay Zeka Analiz Prompt'u Kopyala"** butonu ile arşivinizi kolayca özetleyip trend/korelasyon analizi alabilirsiniz.
 
@@ -51,7 +52,8 @@ Bu proje **sıfır telemetri**, **sıfır harici sunucu** ve **salt okunur (read
 | `tabs` | Aktif sekmenin `https://enabiz.gov.tr` üzerinde olup olmadığını anlamak |
 | `scripting` | Eklenti yüklenmeden önce açılmış e-Nabız sekmesine kullanıcı başlattığında `src/content.js` bağlamak |
 | `downloads` | Oluşturulan `enabiz-md-arsiv.zip` dosyasını bilgisayara indirmek |
-| `https://enabiz.gov.tr/*` | Yalnızca kendi aktif oturumunuz üzerinden salt okunur veri çekmek (başka hiçbir domain izni yoktur) |
+| `https://enabiz.gov.tr/*` | Yalnızca kendi aktif oturumunuz üzerinden salt okunur veri çekmek |
+| `https://teleradyoloji.saglik.gov.tr/*` | Yalnızca sizin görüntüleme bağlantınızla radyoloji kesitlerini (WADO) indirmek; görüntüler cihazınızdan çıkmaz |
 
 ---
 
@@ -66,6 +68,11 @@ enabiz-md-arsiv/
 ├── 04-raporlar.md               # Sağlık raporları listesi + resmi PDF'lerin klinik özeti
 ├── 05-ilaclar-ve-receteler.md   # Reçete detayları (yazılan/alınan) + İlaçlarım kronolojisi
 ├── 06-asi-takip-malzeme.md      # Aşılar, kronik taramalar, randevular, malzemeler ve ek bölümler
+├── radyoloji_goruntuleri/       # (İsteğe bağlı) Tüm radyoloji kesitleri, JPEG
+│   ├── 00-dizin.md              # Çalışma/seri/kesit sayıları ve klasör indeksi
+│   └── 2016-05-02_BEYIN_CT_01/
+│       ├── seri-01_AXIAL/       # 001.jpg, 002.jpg ...
+│       └── seri-02_...
 └── ziyaretler/
     ├── 2026.md                  # Yıllara göre tüm ziyaret, tanı, işlem, tahlil ve reçeteler
     ├── 2025.md
@@ -116,9 +123,12 @@ src/content.js ──(IPC + PDF chunk stream)──► src/sidepanel.js
 - [src/sidepanel.js](src/sidepanel.js) — Watchdog, `runId` izolasyonu, aşamalı PDF işleme ve erişilebilir yan panel arayüzü
 - [src/lib/pdf-extractor.js](src/lib/pdf-extractor.js) — Çevrimdışı `pdf.js` metin çıkarımı ve Türkçe rapor temizleyici
 - [src/lib/markdown-builder.js](src/lib/markdown-builder.js) — Tanı/tahlil analizi, kısmi başarı uyarıları ve Markdown klasör üreticisi
+- [src/lib/teleradyoloji.js](src/lib/teleradyoloji.js) — OTAC/WADO normalizasyonu ve radyoloji kesit klasör planı (Node'da test edilir)
+- [src/lib/teleradyoloji-page.js](src/lib/teleradyoloji-page.js) — Görüntüleyici sekmesine enjekte edilen OTAC/WADO indirme fonksiyonları
 - [src/lib/zip.js](src/lib/zip.js) — Bağımlılıksız UTF-8 + Deflate ZIP paketleyici
 - [tests/verify-builder.mjs](tests/verify-builder.mjs) — Sentetik veriyle uçtan uca Markdown & ZIP doğrulama paketi
 - [tests/verify-parsers.mjs](tests/verify-parsers.mjs) — Seçici ve başlık eşlemeli DOM ayrıştırıcı testleri
+- [tests/verify-teleradyoloji.mjs](tests/verify-teleradyoloji.mjs) — OTAC/WADO, parçalı aktarım ve görüntü dizini testleri
 
 ---
 

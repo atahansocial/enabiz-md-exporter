@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "e-Nabız Markdown Arşivleyici",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "minimum_chrome_version": "119",
   "description": "e-Nabız sağlık geçmişinizi %100 yerel olarak tarayıcınızda temiz Markdown klasör yapısına dönüştürüp ZIP veya klasör olarak indirir.",
   "icons": {
@@ -16,7 +16,8 @@
     "downloads"
   ],
   "host_permissions": [
-    "https://enabiz.gov.tr/*"
+    "https://enabiz.gov.tr/*",
+    "https://teleradyoloji.saglik.gov.tr/*"
   ],
   "action": {
     "default_title": "e-Nabız Markdown Arşivleyici",

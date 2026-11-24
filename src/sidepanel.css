@@ -527,6 +527,11 @@ details[open] .chevron {
   border-color: var(--brand);
 }
 
+.file-item-summary {
+  background: var(--surface-alt);
+  font-weight: 600;
+}
+
 .file-size {
   font-size: 11px;
   color: var(--muted);
