@@ -2,6 +2,11 @@
 
 Bu proje [SemVer](https://semver.org/) sürümleme kurallarını takip eder.
 
+## [1.1.1] - 2026-11-24
+
+### Hata Düzeltmeleri
+- **`ReferenceError: receteNo is not defined` (`src/content.js`)**: Reçetelerim çapraz kontrolünde ekstra reçete kaydı oluşturulurken kullanılan nesne kısaltması (`receteNo,`) tanımsız bir değişkene işaret ediyordu; doğru değişken `recNo` ile eşlendi (`receteNo: recNo`). Bu hata, ziyaret detaylarında bulunmayan en az bir reçete olduğunda dışa aktarımı 4. aşamada durduruyor ve sonraki tüm bölümlerin (tahliller, radyoloji, raporlar, PDF'ler, aşılar) kaybolmasına neden oluyordu.
+
 ## [1.1.0] - 2026-11-24
 
 ### Güvenilirlik & Mimari (İyileştirmeler)

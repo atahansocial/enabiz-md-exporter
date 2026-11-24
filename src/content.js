@@ -531,7 +531,7 @@
             }
             exportData.recetelerimOzet.ekstraReceteler.push({
               tarih: row.cells[0] || '',
-              receteNo,
+              receteNo: recNo,
               receteTuru: row.cells[2] || '',
               hekim: row.cells[3] || '',
               sysTakipNo,
