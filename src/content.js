@@ -18,10 +18,13 @@
   // İstekler arası minimum boşluk (ms). currentDelayMs sunucu 429/5xx döndükçe artar.
   const REQUEST_JITTER_MS = 60;
   const RETRY_BACKOFF_MS = 700;
+  const SPEED_PROFILES = { fast: 120, balanced: 200, slow: 350 };
+  const DEFAULT_SPEED = 'balanced';
 
   let activeRunId = 0;
   let cancelRequested = false;
-  let currentDelayMs = 120;
+  let baseDelayMs = SPEED_PROFILES[DEFAULT_SPEED];
+  let currentDelayMs = baseDelayMs;
   let nextRequestSlotAt = 0;
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -71,12 +74,12 @@
   }
 
   function bumpDelay() {
-    currentDelayMs = currentDelayMs < 350 ? 350 : Math.min(700, currentDelayMs * 2);
+    currentDelayMs = currentDelayMs < 350 ? 350 : Math.min(1000, Math.round(currentDelayMs * 2));
   }
 
   function relaxDelay() {
-    if (currentDelayMs > 120) {
-      currentDelayMs = Math.max(120, Math.floor(currentDelayMs * 0.85));
+    if (currentDelayMs > baseDelayMs) {
+      currentDelayMs = Math.max(baseDelayMs, Math.floor(currentDelayMs * 0.85));
     }
   }
 
@@ -210,7 +213,8 @@
   async function runExportOnPort(port, runId, options = {}) {
     activeRunId = runId;
     cancelRequested = false;
-    currentDelayMs = 120;
+    baseDelayMs = SPEED_PROFILES[options.speed] || SPEED_PROFILES[DEFAULT_SPEED];
+    currentDelayMs = baseDelayMs;
     nextRequestSlotAt = 0;
 
     const fetchReportPdfs = Boolean(options.includeReportPdfs || options.includeRawPdfs);

@@ -2,6 +2,12 @@
 
 Bu proje [SemVer](https://semver.org/) sürümleme kurallarını takip eder.
 
+## [1.2.0] - 2026-11-24
+
+### Yeni Özellik
+- **İstek Hızı Seçici**: Yan panel ayarlarına "Hızlı (120 ms) / Dengeli (200 ms, varsayılan) / Yavaş (350 ms)" seçeneği eklendi. Seçim `paceRequest()` üzerinden tüm isteklerin temposunu belirler; "Yavaş" mod 429, sunucu hatası ve oturum düşmesi riskini azaltır.
+- **Taban Gecikme Korunumu**: Uyarlanabilir hız artık kullanıcının seçtiği taban değerin altına inmiyor (`relaxDelay`), sunucu hatasında üst sınır 1000 ms'ye çıkarıldı.
+
 ## [1.1.2] - 2026-11-24
 
 ### Güvenilirlik

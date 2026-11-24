@@ -223,6 +223,17 @@ code {
   color: var(--muted);
 }
 
+.field-wide {
+  margin-bottom: 2px;
+}
+
+.field-hint {
+  margin: -2px 0 4px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--muted);
+}
+
 .field select {
   width: 100%;
   padding: 6px 8px;

@@ -19,6 +19,7 @@ const el = {
   optLabTimes: document.getElementById('optLabTimes'),
   optRawPdfs: document.getElementById('optRawPdfs'),
   optRawJson: document.getElementById('optRawJson'),
+  requestSpeed: document.getElementById('requestSpeed'),
   btnStart: document.getElementById('btnStart'),
   btnStartLabel: document.getElementById('btnStartLabel'),
   progressCard: document.getElementById('progressCard'),
@@ -456,7 +457,8 @@ async function handleStartClick() {
     endYear: el.endYear.value,
     includeReportPdfs: el.optReportPdfs.checked,
     includeLabPdfTimes: el.optLabTimes.checked,
-    includeRawPdfs: el.optRawPdfs.checked
+    includeRawPdfs: el.optRawPdfs.checked,
+    speed: el.requestSpeed.value
   };
 
   setRunningState(true);

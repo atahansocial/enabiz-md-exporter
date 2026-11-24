@@ -36,6 +36,7 @@
 - **Çevrimdışı Türkçe PDF Çözümleme:** Resmi sağlık raporlarının (İstirahat, Durum Bildirir, Sürücü, Sağlık Kurulu vb.) PDF içeriklerini ve tahlil panellerinin saat bilgilerini eklenti içine gömülü Mozilla [`pdfjs-dist`](vendor/README.txt) ile tamamen tarayıcı içinde UTF-8 olarak çözümler; e-imza ve tekrarlayan kimlik alt/üst bilgilerini temizler.
 - **Referans Dışı Otomatik Sınıflandırma:** Tahlil sonuçlarını referans aralıklarına göre otomatik olarak `Yüksek ↑`, `Düşük ↓`, `Referans Dışı` ve `Normal` olarak etiketler.
 - **ZIP veya Doğrudan Klasör Kaydı:** İster tek bir `enabiz-md-arsiv-YYYY-AA-GG.zip` dosyası indirin, isterseniz File System Access API ile doğrudan diskinizde `enabiz-md-arsiv/` klasörü oluşturun.
+- **Sunucu Dostu İstek Temposu:** "Hızlı / Dengeli / Yavaş" modları ile istekler arası bekleme süresini seçin. Tüm istekler tek bir slot kuyruğundan geçer; 429/5xx durumunda tempo otomatik yavaşlar ve `Retry-After` başlığına uyulur.
 - **Yapay Zeka Uyumlu:** Dosya içi önizleme ve tek tıkla **"Yapay Zeka Analiz Prompt'u Kopyala"** butonu ile arşivinizi kolayca özetleyip trend/korelasyon analizi alabilirsiniz.
 
 ---

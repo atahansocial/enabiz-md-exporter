@@ -54,6 +54,18 @@
           </label>
         </div>
 
+        <label class="field field-wide">
+          <span>İstek Hızı (sunucuya gönderim temposu)</span>
+          <select id="requestSpeed">
+            <option value="fast">Hızlı — en kısa süre (120 ms)</option>
+            <option value="balanced" selected>Dengeli — önerilen (200 ms)</option>
+            <option value="slow">Yavaş — sunucu dostu (350 ms)</option>
+          </select>
+        </label>
+        <p class="field-hint">
+          Yavaş mod daha uzun sürer ancak 429 / sunucu hatası ve oturum düşmesi riskini azaltır.
+        </p>
+
         <label class="check-row">
           <input type="checkbox" id="optReportPdfs" checked />
           <span>Resmi Rapor PDF içeriklerini Markdown'a çıkar</span>
