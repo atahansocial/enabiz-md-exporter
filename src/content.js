@@ -15,10 +15,14 @@
 
   const TOTAL_STAGES = 10;
   const REQUEST_TIMEOUT_MS = 25000;
+  // İstekler arası minimum boşluk (ms). currentDelayMs sunucu 429/5xx döndükçe artar.
+  const REQUEST_JITTER_MS = 60;
+  const RETRY_BACKOFF_MS = 700;
 
   let activeRunId = 0;
   let cancelRequested = false;
   let currentDelayMs = 120;
+  let nextRequestSlotAt = 0;
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const htmlToDoc = (html) => new DOMParser().parseFromString(html || '', 'text/html');
@@ -76,8 +80,36 @@
     }
   }
 
+  /**
+   * Küresel istek aralığı: eşzamanlı çağrılar tek bir slot kuyruğuna girer.
+   * Böylece "4 isteği aynı anda at" yerine sunucuya düzenli aralıklarla istek gider
+   * ve 429/5xx yediğimizde currentDelayMs büyüdüğü için tempo otomatik yavaşlar.
+   */
+  async function paceRequest() {
+    const now = Date.now();
+    const slot = Math.max(now, nextRequestSlotAt);
+    nextRequestSlotAt = slot + currentDelayMs + Math.random() * REQUEST_JITTER_MS;
+    if (slot > now) await sleep(slot - now);
+  }
+
+  /**
+   * Retry bekleme süresi: Retry-After başlığına uyar, yoksa artan bekleme + jitter.
+   */
+  function retryDelay(res, fallbackMs = RETRY_BACKOFF_MS) {
+    const header = res?.headers?.get?.('Retry-After');
+    if (header) {
+      const secs = Number(header);
+      if (Number.isFinite(secs) && secs > 0) return Math.min(secs * 1000, 15000);
+      const at = Date.parse(header);
+      if (Number.isFinite(at)) return Math.max(0, Math.min(at - Date.now(), 15000));
+    }
+    return fallbackMs + Math.floor(Math.random() * 300);
+  }
+
   async function safeFetchText(url, opts = {}) {
     for (let attempt = 0; attempt < 2; attempt++) {
+      if (cancelRequested) return { ok: false, cancelled: true, status: 0, text: '' };
+      await paceRequest();
       if (cancelRequested) return { ok: false, cancelled: true, status: 0, text: '' };
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -91,7 +123,7 @@
         if (res.status === 429 || res.status >= 500) {
           bumpDelay();
           if (attempt === 0) {
-            await sleep(600);
+            await sleep(retryDelay(res));
             continue;
           }
         } else if (res.ok) {
@@ -118,6 +150,8 @@
   async function safeFetchBuffer(url, opts = {}) {
     for (let attempt = 0; attempt < 2; attempt++) {
       if (cancelRequested) return { ok: false, cancelled: true, status: 0, buffer: null };
+      await paceRequest();
+      if (cancelRequested) return { ok: false, cancelled: true, status: 0, buffer: null };
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
       try {
@@ -131,7 +165,7 @@
         if (res.status === 429 || res.status >= 500) {
           bumpDelay();
           if (attempt === 0) {
-            await sleep(600);
+            await sleep(retryDelay(res));
             continue;
           }
         } else if (res.ok) {
@@ -177,6 +211,7 @@
     activeRunId = runId;
     cancelRequested = false;
     currentDelayMs = 120;
+    nextRequestSlotAt = 0;
 
     const fetchReportPdfs = Boolean(options.includeReportPdfs || options.includeRawPdfs);
     const fetchLabPdfs = Boolean(options.includeLabPdfTimes || options.includeRawPdfs);
@@ -414,7 +449,6 @@
 
         for (const rec of receteler) {
           if (!rec.detayUrl) continue;
-          await sleep(80);
           const rr = await safeFetchText(rec.detayUrl);
           if (rr.ok) {
             rec.ilaclar = { status: rr.status, ...P.parsePrescriptionTables(htmlToDoc(rr.text)) };

@@ -2,6 +2,13 @@
 
 Bu proje [SemVer](https://semver.org/) sürümleme kurallarını takip eder.
 
+## [1.1.2] - 2026-11-24
+
+### Güvenilirlik
+- **Küresel İstek Temposu (`paceRequest`)**: Eşzamanlı toplu istekler (ziyaret detayları 4'lü, tahlil PDF'leri 3'lü) artık tek bir slot kuyruğuna giriyor. Her istek arasında `currentDelayMs` (120 ms) + rastgele 0–60 ms jitter bekleniyor; böylece sunucuya aynı anda 4 istek birden patlamıyor. `currentDelayMs` 429/5xx'te otomatik yükseldiği için tempo sunucu baskı altındayken kendiliğinden yavaşlıyor.
+- **`Retry-After` Desteği**: 429/5xx yanıtlarında retry beklemesi sabit 600 ms yerine `Retry-After` başlığına (saniye veya HTTP tarihi) uyuyor; başlık yoksa 700 ms + jitter kullanılıyor (üst sınır 15 sn).
+- **Tutarlı Reçete Detay Gecikmesi**: Reçete detay isteklerindeki sabit `sleep(80)` kaldırıldı; tempo artık merkezî `paceRequest()` üzerinden yönetiliyor.
+
 ## [1.1.1] - 2026-11-24
 
 ### Hata Düzeltmeleri
