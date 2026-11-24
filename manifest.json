@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "e-Nabız Markdown Arşivleyici",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "minimum_chrome_version": "119",
   "description": "e-Nabız sağlık geçmişinizi %100 yerel olarak tarayıcınızda temiz Markdown klasör yapısına dönüştürüp ZIP veya klasör olarak indirir.",
   "icons": {

@@ -2,6 +2,14 @@
 
 Bu proje [SemVer](https://semver.org/) sürümleme kurallarını takip eder.
 
+## [1.4.1] - 2026-11-24
+
+### Kritik Hata Düzeltmesi ve Hızlandırma (Radyoloji WADO)
+- **WADO CORS Hatası Giderildi (`0.0 MB` sorunu — `src/lib/teleradyoloji-page.js`)**: Teletip WADO sunucusu (`app.teletip.saglik.gov.tr`) `Access-Control-Allow-Origin: https://teleradyoloji.saglik.gov.tr` döndürürken `Access-Control-Allow-Credentials` döndürmediği için `credentials: 'include'` ile atılan tüm istekler Chrome CORS engeline takılıp `0.0 MB` üretiyordu. Resmî görüntüleyiciyle birebir uyumlu olacak şekilde `credentials: 'same-origin'` kullanıldı.
+- **Arka Plan Sekmesi `setTimeout` Kısıtlaması Aşıldı (`31+ dk` bekleme sorunu — `src/sidepanel.js`, `src/lib/teleradyoloji-page.js`)**: Chrome'un arka plan sekmelerinde `setTimeout` çağrılarını 1 sn / 60 sn'ye kısması nedeniyle oluşan aşırı yavaşlama kaldırıldı; beklemeler ön plandaki yan panel (`RAD_SLEEP`) üzerinden çalıştırılır ve kesitler paralel (`balanced: 6`, `fast: 8` eşzamanlı, `0 ms` yapay gecikme) indirilir.
+- **Erken Devre Kesici (Fail-Fast)**: Bir çalışmada hiç kesit inmeden art arda 6 kesit hata verirse yüzlerce kesiti boşuna denemek yerine 2 saniye içinde o çalışma sonlandırılıp net hata mesajı yazılır.
+- **Mükerrer Çalışma Önleme & DICOM Yedeği (`src/lib/teleradyoloji.js`, `src/lib/teleradyoloji-page.js`)**: `LoadWorkItemForENabiz` yanıtındaki geçmiş karşılaştırma çalışmaları elenip yalnızca `PrimaryOrderRelation === "CURRENT"` olan çalışma alınır ve `StudyInstanceUID` bazında tekilleştirilir. JPEG dönüşümü desteklenmeyen serilerde otomatik `application/dicom` yedeği denenir.
+
 ## [1.4.0] - 2026-11-24
 
 ### Yeni Özellikler

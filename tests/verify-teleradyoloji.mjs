@@ -211,6 +211,22 @@ const customOriginPlan = enumerateWorkItem(
 );
 assert.ok(customOriginPlan.frames[0].url.startsWith('https://custom-pacs.example/wado?'));
 
+// PrimaryOrderRelation === "CURRENT" filtresi + seenStudyUids tekilleştirmesi.
+const seenUids = new Set();
+const withHistory = {
+  Patient: {
+    Studies: [
+      { StudyInstanceUID: 'old-study', PrimaryOrderRelation: 'PRIOR', WadoAddress: '/w?', Series: [{ SeriesInstanceUID: 's0', Instances: [{ SOPInstanceUID: 'o0' }] }] },
+      { StudyInstanceUID: 'cur-study', PrimaryOrderRelation: 'CURRENT', WadoAddress: '/w?', Series: [{ SeriesInstanceUID: 's1', Instances: [{ SOPInstanceUID: 'o1' }] }] }
+    ]
+  }
+};
+const currentPlan = enumerateWorkItem(withHistory, { index: 0, seenStudyUids: seenUids });
+assert.equal(currentPlan.studies.length, 1);
+assert.equal(currentPlan.studies[0].studyUid, 'cur-study');
+const dupStudyPlan = enumerateWorkItem(withHistory, { index: 1, seenStudyUids: seenUids });
+assert.equal(dupStudyPlan.studies.length, 0);
+
 console.log('✓ Teleradyoloji OTAC, WADO ve klasör planı kontrolleri geçti');
 
 // --- Markdown arşivine entegrasyon ---
@@ -447,9 +463,13 @@ try {
   assert.equal(retryDl.done, 1);
   assert.equal(retryDl.failed, 0);
 
-  // Hata durumunda RAD_IMG_ERROR üretilmeli.
+  // Hata durumunda RAD_IMG_ERROR üretilmeli ve credentials === 'same-origin' olmalı.
   messages.length = 0;
-  globalThis.fetch = async () => ({ ok: false, status: 404, arrayBuffer: async () => new ArrayBuffer(0) });
+  let capturedCreds = '';
+  globalThis.fetch = async (_u, opts) => {
+    capturedCreds = opts.credentials;
+    return { ok: false, status: 404, arrayBuffer: async () => new ArrayBuffer(0) };
+  };
   const failedDl = await radiologyPageDownload({
     runId: 7,
     jobId: 'job-3',
@@ -458,8 +478,57 @@ try {
     concurrency: 1,
     delayMs: 0
   });
+  assert.equal(capturedCreds, 'same-origin');
   assert.equal(failedDl.failed, 1);
   assert.ok(messages.some((m) => m.type === 'RAD_IMG_ERROR' && m.status === 404));
+
+  // JPEG 406 dönerse otomatik application/dicom yedeği denenmeli.
+  messages.length = 0;
+  globalThis.fetch = async (u) => {
+    if (String(u).includes('contentType=image/jpeg')) {
+      return { ok: false, status: 406, arrayBuffer: async () => new ArrayBuffer(0) };
+    }
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/dicom' },
+      arrayBuffer: async () => dicomBuf.buffer
+    };
+  };
+  const fallbackDl = await radiologyPageDownload({
+    runId: 7,
+    jobId: 'job-dicom-fb',
+    items: [{ url: 'https://tr.example/wado?requestType=WADO&contentType=image/jpeg', path: 'radyoloji_goruntuleri/a/005.jpg' }],
+    token: 'Bearer TOK',
+    concurrency: 1,
+    delayMs: 0
+  });
+  assert.equal(fallbackDl.done, 1);
+  assert.equal(messages.find((m) => m.type === 'RAD_IMG_FILE').path, 'radyoloji_goruntuleri/a/005.dcm');
+
+  // Erken devre kesici (fail-fast): 0 başarılı + 6 ardışık hatada 50 kesitin kalanını denememeli.
+  messages.length = 0;
+  let totalCalls = 0;
+  globalThis.fetch = async () => {
+    totalCalls += 1;
+    return { ok: false, status: 403, arrayBuffer: async () => new ArrayBuffer(0) };
+  };
+  const fiftyItems = Array.from({ length: 50 }, (_, idx) => ({
+    url: `https://tr.example/wado?i=${idx}`,
+    path: `radyoloji_goruntuleri/a/${idx}.jpg`
+  }));
+  const circuitDl = await radiologyPageDownload({
+    runId: 7,
+    jobId: 'job-circuit',
+    items: fiftyItems,
+    token: 'Bearer TOK',
+    concurrency: 1,
+    delayMs: 0,
+    retryBaseMs: 1
+  });
+  assert.equal(circuitDl.abortedEarly, true);
+  assert.equal(circuitDl.failed, 6);
+  assert.equal(totalCalls, 6);
 
   // --- e-Nabız görüntüleme bağlantısı ---
   globalThis.document = { querySelector: () => ({ value: 'XSRF' }) };

@@ -94,7 +94,13 @@ function normalizeWorkItem(workItem) {
   const root = workItem || {};
   const patient = root.Patient || root.patient || {};
   const rawStudies = patient.Studies || patient.studies || root.Studies || root.studies || [];
-  return Array.isArray(rawStudies) ? rawStudies : [];
+  if (!Array.isArray(rawStudies)) return [];
+  // LoadWorkItemForENabiz tüm geçmiş çalışmaları da Patient.Studies içinde döndürebilir;
+  // yalnızca geçerli isteme ait ("CURRENT") çalışmaları seç (yoksa tümünü koru).
+  const currentOnly = rawStudies.filter(
+    (s) => String(s?.PrimaryOrderRelation || s?.primaryOrderRelation || '').toUpperCase() === 'CURRENT'
+  );
+  return currentOnly.length > 0 ? currentOnly : rawStudies;
 }
 
 function uniqueName(base, used) {
@@ -150,6 +156,12 @@ export function enumerateWorkItem(workItem, meta = {}, origin = TELERADYOLOJI_OR
       warnings.push(`${studyDesc}: çalışma kimliği (StudyInstanceUID) yok, görüntüler atlandı.`);
       return;
     }
+    if (meta.seenStudyUids instanceof Set) {
+      if (meta.seenStudyUids.has(studyUid)) {
+        return;
+      }
+      meta.seenStudyUids.add(studyUid);
+    }
     if (!wadoBase) {
       warnings.push(`${studyDesc}: WADO adresi yok, görüntüler atlandı.`);
       return;
@@ -182,9 +194,11 @@ export function enumerateWorkItem(workItem, meta = {}, origin = TELERADYOLOJI_OR
       }
 
       const instances = Array.isArray(series.Instances) ? series.Instances : [];
+      const sopClassUid = String(first(series.SopClassUid, series.SOPClassUID, series.sopClassUid));
+      const forceDicom = sopClassUid === '1.2.840.10008.5.1.4.1.1.104.1';
       // Görüntüleyici, çok kareli (multiframe) serileri yalnızca az sayıda
       // instance varsa ve kare sayısı 500'ün altındaysa açıyor; aynı davranış.
-      const expandMultiframe = instances.length < 10;
+      const expandMultiframe = instances.length < 10 && !forceDicom;
       let seriesFrameCount = 0;
 
       instances.forEach((instance) => {
@@ -207,14 +221,16 @@ export function enumerateWorkItem(workItem, meta = {}, origin = TELERADYOLOJI_OR
           seriesFrameCount += 1;
           studyFrameCount += 1;
           const frameNumber = f + 1;
+          const ext = forceDicom ? 'dcm' : 'jpg';
           frames.push({
-            path: `${seriesFolder}/${String(seriesFrameCount).padStart(3, '0')}.jpg`,
+            path: `${seriesFolder}/${String(seriesFrameCount).padStart(3, '0')}.${ext}`,
             url: buildWadoUrl({
               base: wadoBase,
               studyUid,
               seriesUid,
               objectUid,
-              frameNumber: framesInInstance > 1 ? frameNumber : null
+              frameNumber: framesInInstance > 1 ? frameNumber : null,
+              contentType: forceDicom ? 'application/dicom' : 'image/jpeg'
             }, origin),
             studyIndex,
             seriesIndex,

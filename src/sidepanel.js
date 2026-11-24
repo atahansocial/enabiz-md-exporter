@@ -89,9 +89,9 @@ let runRawPdfFiles = [];
 const RAD_IMG_PREFIX = 'radyoloji_goruntuleri/';
 const TELERADYOLOJI_VIEWER_URL = `${TELERADYOLOJI_ORIGIN}/robots.txt`; // nginx 404 sayfası: SPA çalışmaz, origin doğru kalır
 const RAD_SPEED_CONFIG = {
-  fast: { concurrency: 3, delayMs: 60 },
-  balanced: { concurrency: 2, delayMs: 180 },
-  slow: { concurrency: 1, delayMs: 350 }
+  fast: { concurrency: 8, delayMs: 0 },
+  balanced: { concurrency: 6, delayMs: 0 },
+  slow: { concurrency: 2, delayMs: 120 }
 };
 let runRadImageFiles = [];
 let runRadImageStats = null;
@@ -443,6 +443,7 @@ async function downloadRadiologyImages(runId, rawData, options = {}) {
   };
   runRadImageStats = stats;
   rawData.radyolojiImages = stats;
+  const seenStudyUids = new Set();
 
   const label = (r) => `${r.tarih || ''} ${r.aciklama || ''}`.trim();
 
@@ -496,7 +497,7 @@ async function downloadRadiologyImages(runId, rawData, options = {}) {
 
       const plan = enumerateWorkItem(
         auth.workItem,
-        { tarih: record.tarih, aciklama: record.aciklama, index },
+        { tarih: record.tarih, aciklama: record.aciklama, index, seenStudyUids },
         TELERADYOLOJI_ORIGIN
       );
       if (plan.warnings.length) stats.errors.push(`${label(record)}: ${plan.warnings.join(' ')}`);
@@ -551,10 +552,14 @@ async function downloadRadiologyImages(runId, rawData, options = {}) {
           bytes: stats.bytes - bytesBefore,
           failed: download?.failed || 0
         };
+      } else if (download?.abortedEarly) {
+        stats.errors.push(
+          `${label(record)}: sunucudan görüntü alınamadı (${download.firstError || 'bağlantı hatası'}), kalan kesitler atlandı.`
+        );
       } else if (!download) {
         stats.errors.push(`${label(record)}: hiç görüntü indirilemedi.`);
       }
-      if (download?.cancelled) return;
+      if (download?.cancelled && !download?.abortedEarly) return;
     }
   } finally {
     closeRadImageTab();
@@ -564,6 +569,15 @@ async function downloadRadiologyImages(runId, rawData, options = {}) {
 // Görüntüleyici sekmesinden gelen görüntü parçalarını topla.
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (!msg || typeof msg !== 'object') return;
+  if (msg.type === 'RAD_SLEEP') {
+    if (msg.runId !== currentRunId) {
+      sendResponse({ ok: false });
+      return;
+    }
+    const wait = Math.min(15000, Math.max(0, Number(msg.ms) || 0));
+    setTimeout(() => sendResponse({ ok: true, slept: true }), wait);
+    return true;
+  }
   if (!['RAD_IMG_FILE', 'RAD_IMG_CHUNK', 'RAD_IMG_PROGRESS', 'RAD_IMG_ERROR'].includes(msg.type)) return;
   if (msg.runId !== currentRunId || !runRadImageStats) {
     sendResponse({ ok: false });

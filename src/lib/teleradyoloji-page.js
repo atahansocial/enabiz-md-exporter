@@ -21,7 +21,7 @@ export async function radiologyPageAuth(cfg) {
   async function requestJson(url, options) {
     const { controller, timer } = ctl(25000);
     try {
-      const res = await fetch(url, { ...options, credentials: 'include', signal: controller.signal, referrer: 'https://teleradyoloji.saglik.gov.tr/viewer/' });
+      const res = await fetch(url, { ...options, credentials: 'same-origin', signal: controller.signal, referrer: 'https://teleradyoloji.saglik.gov.tr/viewer/' });
       const text = await res.text();
       let json = null;
       try { json = JSON.parse(text); } catch {}
@@ -95,16 +95,39 @@ export async function radiologyPageAuth(cfg) {
  *          concurrency?:number, delayMs?:number}} cfg
  */
 export async function radiologyPageDownload(cfg) {
-  const { runId, jobId, items, token, concurrency = 3, delayMs = 60, retryBaseMs = 900 } = cfg;
+  const { runId, jobId, items, token, concurrency = 6, delayMs = 0, retryBaseMs = 400 } = cfg;
   const total = items.length;
   let cancelled = false;
+  let abortedEarly = false;
+  let firstError = '';
+  let consecutiveFailures = 0;
   let done = 0;
   let failed = 0;
   let bytes = 0;
   let cursor = 0;
   let lastReport = 0;
 
-  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  // Arka plan sekmesinde setTimeout Chrome tarafından 1 sn - 60 sn'ye kısıldığı için
+  // beklemeyi ön plandaki yan panel üzerinden çalıştır (test ortamında setTimeout'a düş).
+  const sleep = (ms) => new Promise((resolve) => {
+    const wait = Math.max(0, Number(ms) || 0);
+    if (wait === 0) {
+      resolve();
+      return;
+    }
+    try {
+      chrome.runtime.sendMessage({ type: 'RAD_SLEEP', runId, ms: wait }, (res) => {
+        const err = chrome.runtime.lastError;
+        if (!err && res && res.slept) {
+          resolve();
+        } else {
+          setTimeout(resolve, wait);
+        }
+      });
+    } catch {
+      setTimeout(resolve, wait);
+    }
+  });
   const parseRetryAfterMs = (headerVal) => {
     if (!headerVal) return null;
     const raw = String(headerVal).trim();
@@ -178,52 +201,83 @@ export async function radiologyPageDownload(cfg) {
     return btoa(binary);
   };
 
+  async function fetchOnce(targetUrl) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    try {
+      // ÖNEMLİ: WADO sunucusu (app.teletip.saglik.gov.tr) Access-Control-Allow-Origin
+      // döndürür ancak Access-Control-Allow-Credentials döndürmez; credentials: 'include'
+      // kullanılırsa Chrome tüm yanıtları CORS hatasıyla düşürür! 'same-origin' kullanılmalı.
+      const res = await fetch(targetUrl, {
+        method: 'GET',
+        credentials: 'same-origin',
+        referrer: 'https://teleradyoloji.saglik.gov.tr/viewer/',
+        headers: {
+          Accept: 'image/*,application/dicom;q=0.8,*/*;q=0.5',
+          Authorization: token
+        },
+        signal: controller.signal
+      });
+      if (res.ok) {
+        const buffer = await res.arrayBuffer();
+        clearTimeout(timer);
+        const contentType = String(res.headers?.get?.('content-type') || '').toLowerCase();
+        const detected = detectMediaKind(buffer, contentType);
+        if (detected.ok) {
+          return { ok: true, status: res.status, buffer, contentType, isDicom: detected.isDicom };
+        }
+        return { ok: false, status: res.status, fatal: true, error: detected.error };
+      }
+      clearTimeout(timer);
+      return {
+        ok: false,
+        status: res.status,
+        fatal: res.status === 401 || res.status === 403 || res.status === 404,
+        retryDelayMs: parseRetryAfterMs(res.headers?.get?.('retry-after')),
+        error: `HTTP ${res.status}`
+      };
+    } catch (err) {
+      clearTimeout(timer);
+      return {
+        ok: false,
+        status: 0,
+        fatal: false,
+        error: err && err.name === 'AbortError' ? 'Zaman aşımı' : String((err && err.message) || err)
+      };
+    }
+  }
+
   async function downloadOne(item) {
     let attempt = 0;
     let lastStatus = 0;
     let lastError = '';
-    while (attempt < 3 && !cancelled) {
-      let retryDelayMs = null;
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 30000);
-      try {
-        const res = await fetch(item.url, {
-          method: 'GET',
-          credentials: 'include',
-          referrer: 'https://teleradyoloji.saglik.gov.tr/viewer/',
-          headers: {
-            Accept: 'image/*,application/dicom;q=0.8,*/*;q=0.5',
-            Authorization: token
-          },
-          signal: controller.signal
-        });
-        lastStatus = res.status;
-        if (res.ok) {
-          const buffer = await res.arrayBuffer();
-          clearTimeout(timer);
-          const contentType = String(res.headers?.get?.('content-type') || '').toLowerCase();
-          const detected = detectMediaKind(buffer, contentType);
-          if (detected.ok) {
-            return { ok: true, buffer, contentType, isDicom: detected.isDicom };
-          }
-          lastError = detected.error;
-          break;
-        } else {
-          clearTimeout(timer);
-          lastError = `HTTP ${res.status}`;
-          if (res.status === 401 || res.status === 403 || res.status === 404) break;
-          retryDelayMs = parseRetryAfterMs(res.headers?.get?.('retry-after'));
-        }
-      } catch (err) {
-        clearTimeout(timer);
-        lastError = err && err.name === 'AbortError' ? 'Zaman aşımı' : String((err && err.message) || err);
+    const maxAttempts = done === 0 ? 2 : 3;
+    while (attempt < maxAttempts && !cancelled) {
+      const r = await fetchOnce(item.url);
+      if (r.ok) return r;
+      lastStatus = r.status;
+      lastError = r.error;
+
+      // Sunucu JPEG dönüşümünü desteklemiyorsa (400/406/415/500 veya geçersiz çıktı) DICOM olarak dene
+      if (
+        item.url.includes('contentType=image/jpeg') &&
+        (r.status === 400 || r.status === 406 || r.status === 415 || r.status === 500 || r.fatal) &&
+        r.status !== 401 &&
+        r.status !== 403 &&
+        r.status !== 404
+      ) {
+        const dicomUrl = item.url.replace('contentType=image/jpeg', 'contentType=application/dicom');
+        const dr = await fetchOnce(dicomUrl);
+        if (dr.ok) return dr;
       }
+
+      if (r.fatal) break;
       attempt += 1;
-      if (attempt < 3 && !cancelled) {
+      if (attempt < maxAttempts && !cancelled) {
         const waitMs =
-          retryDelayMs != null
-            ? retryDelayMs
-            : Math.min(15000, retryBaseMs * (2 ** (attempt - 1)) + Math.floor(Math.random() * Math.min(400, retryBaseMs)));
+          r.retryDelayMs != null
+            ? r.retryDelayMs
+            : Math.min(8000, retryBaseMs * (2 ** (attempt - 1)) + Math.floor(Math.random() * Math.min(250, retryBaseMs)));
         await sleep(waitMs);
       }
     }
@@ -240,6 +294,7 @@ export async function radiologyPageDownload(cfg) {
       if (cancelled) return;
 
       if (result.ok) {
+        consecutiveFailures = 0;
         const sizeBytes = result.buffer.byteLength;
         const base64 = toBase64(result.buffer);
         const filePath = result.isDicom ? item.path.replace(/\.jpg$/i, '.dcm') : item.path;
@@ -276,6 +331,8 @@ export async function radiologyPageDownload(cfg) {
         }
       } else {
         failed += 1;
+        consecutiveFailures += 1;
+        if (!firstError && result.error) firstError = result.error;
         const accepted = await send({
           type: 'RAD_IMG_ERROR',
           runId,
@@ -287,6 +344,12 @@ export async function radiologyPageDownload(cfg) {
           total
         });
         if (!accepted) {
+          cancelled = true;
+          return;
+        }
+        // Hiçbir kesit inmeden art arda 6 kesit hata verdiyse yüzlerce kesiti boşuna deneme!
+        if (done === 0 && consecutiveFailures >= 6 && total > 6) {
+          abortedEarly = true;
           cancelled = true;
           return;
         }
@@ -303,7 +366,7 @@ export async function radiologyPageDownload(cfg) {
           failed,
           total,
           bytes,
-          label: `Radyoloji görüntüleri: ${done + failed}/${total} kesit · ${(bytes / 1048576).toFixed(1)} MB`
+          label: `Radyoloji görüntüleri: ${done}/${total} kesit${failed ? ` (${failed} hata)` : ''} · ${(bytes / 1048576).toFixed(1)} MB`
         });
       }
       if (delayMs > 0) await sleep(delayMs);
@@ -315,7 +378,7 @@ export async function radiologyPageDownload(cfg) {
   } finally {
     try { chrome.runtime.onMessage.removeListener(onMessage); } catch {}
   }
-  return { ok: true, done, failed, bytes, cancelled };
+  return { ok: true, done, failed, bytes, cancelled, abortedEarly, firstError };
 }
 
 /**
