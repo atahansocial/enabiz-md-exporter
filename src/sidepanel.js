@@ -2,7 +2,9 @@ import { buildMarkdownArchive } from './lib/markdown-builder.js';
 import { base64ToUint8Array, extractPdfText } from './lib/pdf-extractor.js';
 import { createZipBlob } from './lib/zip.js';
 
-const ENABIZ_ZİYARET_URL = 'https://enabiz.gov.tr/Home/Ziyaretlerim';
+const ENABIZ_ZIYARET_URL = 'https://enabiz.gov.tr/Home/Ziyaretlerim';
+const TOTAL_STAGES = 10;
+const WATCHDOG_MS = 60000;
 
 const el = {
   statusCard: document.getElementById('statusCard'),
@@ -27,7 +29,11 @@ const el = {
   errorCard: document.getElementById('errorCard'),
   errorMsg: document.getElementById('errorMsg'),
   resultCard: document.getElementById('resultCard'),
+  resultBadge: document.getElementById('resultBadge'),
   resultMeta: document.getElementById('resultMeta'),
+  warningBanner: document.getElementById('warningBanner'),
+  warningTitle: document.getElementById('warningTitle'),
+  warningList: document.getElementById('warningList'),
   statsGrid: document.getElementById('statsGrid'),
   btnDownloadZip: document.getElementById('btnDownloadZip'),
   btnSaveFolder: document.getElementById('btnSaveFolder'),
@@ -41,12 +47,39 @@ const el = {
 };
 
 let activeTabId = null;
+let activePort = null;
+let currentRunId = 0;
 let isRunning = false;
 let timerInterval = null;
+let watchdogTimer = null;
 let startTimestamp = 0;
-let collectedPdfBlobs = [];
-let lastArchiveEntries = null; // Map<string, string | Uint8Array>
+let lastArchiveEntries = null;
 let lastStats = null;
+let lastFocusedElement = null;
+
+// Incremental per-run PDF state (eliminates holding base64 strings in memory)
+let runPdfQueue = Promise.resolve();
+let runPdfProcessedCount = 0;
+let runLabPdfTexts = {};
+let runReportExtracts = new Map();
+let runRadExtracts = new Map();
+let runRawPdfFiles = [];
+
+function populateYearDropdowns() {
+  const currentYear = new Date().getFullYear();
+  for (let y = 2014; y <= currentYear; y++) {
+    const opt = document.createElement('option');
+    opt.value = String(y);
+    opt.textContent = String(y);
+    el.startYear.appendChild(opt);
+  }
+  for (let y = currentYear; y >= 2018; y--) {
+    const opt = document.createElement('option');
+    opt.value = String(y);
+    opt.textContent = String(y);
+    el.endYear.appendChild(opt);
+  }
+}
 
 function formatElapsed(ms) {
   const sec = Math.floor(ms / 1000);
@@ -86,7 +119,10 @@ async function ensureContentScriptAndPing(tab) {
     return { onEnabiz: true, ...res };
   } catch {
     try {
-      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['src/content.js'] });
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ['src/lib/dom-parsers.js', 'src/content.js']
+      });
       const res = await chrome.tabs.sendMessage(tab.id, { type: 'PING_ENABIZ' });
       return { onEnabiz: true, ...res };
     } catch (err) {
@@ -105,7 +141,7 @@ async function refreshTabStatus() {
     setStatus(
       'status-warn',
       'e-Nabız sekmesi açık değil',
-      'Önce e-Nabız\'ı açıp e-Devlet veya şifrenizle giriş yapın, ardından buradan tek tıkla çekin.',
+      "Önce e-Nabız'ı açıp e-Devlet veya şifrenizle giriş yapın, ardından buradan tek tıkla çekin.",
       true
     );
     el.btnStart.disabled = true;
@@ -125,12 +161,7 @@ async function refreshTabStatus() {
 
   const who = info.patientName ? `${info.patientName} — ` : '';
   const yr = info.yearRange?.min && info.yearRange?.max ? `(${info.yearRange.min}–${info.yearRange.max})` : '';
-  setStatus(
-    'status-ready',
-    'e-Nabız oturumu hazır',
-    `${who}Arşiv çekmeye hazır ${yr}`.trim(),
-    false
-  );
+  setStatus('status-ready', 'e-Nabız oturumu hazır', `${who}Arşiv çekmeye hazır ${yr}`.trim(), false);
   el.btnStart.disabled = false;
 }
 
@@ -149,6 +180,37 @@ function stopTimer() {
   }
 }
 
+function clearWatchdog() {
+  if (watchdogTimer) {
+    clearTimeout(watchdogTimer);
+    watchdogTimer = null;
+  }
+}
+
+function resetWatchdog(runId) {
+  clearWatchdog();
+  watchdogTimer = setTimeout(() => {
+    if (!isRunning || runId !== currentRunId) return;
+    cancelCurrentRun('e-Nabız uzun süredir yanıt vermiyor (60 sn zaman aşımı). İnternet veya oturumunuzu kontrol edip tekrar deneyin.');
+  }, WATCHDOG_MS);
+}
+
+function updateProgressUI(stageIndex, totalStages, label) {
+  const pct = Math.max(4, Math.min(100, Math.round((stageIndex / totalStages) * 100)));
+  el.progressBar.style.width = `${pct}%`;
+  el.progressStage.textContent = `Adım ${stageIndex}/${totalStages}`;
+  el.progressDetail.textContent = label;
+}
+
+function resetRunBuffers() {
+  runPdfQueue = Promise.resolve();
+  runPdfProcessedCount = 0;
+  runLabPdfTexts = {};
+  runReportExtracts = new Map();
+  runRadExtracts = new Map();
+  runRawPdfFiles = [];
+}
+
 function setRunningState(running) {
   isRunning = running;
   if (running) {
@@ -160,123 +222,199 @@ function setRunningState(running) {
     hideError();
     startTimer();
   } else {
+    clearWatchdog();
+    stopTimer();
     el.btnStart.classList.remove('btn-stop');
     el.btnStartLabel.textContent = 'Sağlık Arşivimi Çek';
-    stopTimer();
     refreshTabStatus();
   }
 }
 
-function updateProgressUI(stageIndex, totalStages, label) {
-  const pct = Math.max(4, Math.min(100, Math.round((stageIndex / totalStages) * 100)));
-  el.progressBar.style.width = `${pct}%`;
-  el.progressStage.textContent = `Adım ${stageIndex}/${totalStages}`;
-  el.progressDetail.textContent = label;
+function disconnectActivePort() {
+  if (activePort) {
+    try {
+      activePort.disconnect();
+    } catch {}
+    activePort = null;
+  }
 }
 
-async function processPdfsAndBuildArchive(rawData) {
-  const labPdfTexts = {};
-  const rawPdfFiles = [];
-  const totalPdfs = collectedPdfBlobs.length;
+function cancelCurrentRun(errorMessage = '') {
+  currentRunId += 1; // invalidates any in-flight messages or queued PDF tasks from old run
+  if (activePort) {
+    try {
+      activePort.postMessage({ type: 'CANCEL_EXPORT' });
+    } catch {}
+    disconnectActivePort();
+  }
+  el.progressCard.classList.add('hidden');
+  setRunningState(false);
+  if (errorMessage) showError(errorMessage);
+}
 
-  for (let i = 0; i < totalPdfs; i++) {
-    const item = collectedPdfBlobs[i];
-    updateProgressUI(
-      9,
-      10,
-      `PDF metinleri yerel olarak çözümleniyor (${i + 1}/${totalPdfs})...`
-    );
+function enqueuePdfBlob(runId, msg, opts) {
+  runPdfQueue = runPdfQueue.then(async () => {
+    if (!isRunning || runId !== currentRunId) return;
 
-    const u8 = base64ToUint8Array(item.base64);
-    if (el.optRawPdfs.checked) {
-      rawPdfFiles.push({ path: item.relativePath, content: u8 });
+    const u8 = base64ToUint8Array(msg.base64);
+    msg.base64 = null; // release base64 string immediately
+
+    if (opts.includeRawPdfs && msg.relativePath) {
+      runRawPdfFiles.push({ path: msg.relativePath, content: u8 });
     }
+
+    const needsText =
+      (msg.kind === 'lab' && opts.includeLabPdfTimes) ||
+      ((msg.kind === 'rapor' || msg.kind === 'radyoloji') && opts.includeReportPdfs);
+
+    if (!needsText) return;
 
     try {
       const parsed = await extractPdfText(u8);
-      if (item.kind === 'rapor' && rawData.raporlar?.raporlar?.[item.raporIndex]) {
-        const rp = rawData.raporlar.raporlar[item.raporIndex];
-        rp.pdf = {
-          ...(rp.pdf || {}),
-          pageCount: parsed.pageCount,
-          extractedText: parsed.text
-        };
-      } else if (item.kind === 'radyoloji' && rawData.radyoloji?.[item.radIndex]) {
-        const rad = rawData.radyoloji[item.radIndex];
-        rad.pdf = {
-          ...(rad.pdf || {}),
-          pageCount: parsed.pageCount,
-          extractedText: parsed.text
-        };
-      } else if (item.kind === 'lab') {
-        labPdfTexts[item.filename] = parsed.text;
-        if (rawData.tahlillerim?.panels?.[item.panelIndex]?.pdf) {
-          rawData.tahlillerim.panels[item.panelIndex].pdf.extractedText = parsed.text;
-        }
+      if (!isRunning || runId !== currentRunId) return;
+      runPdfProcessedCount += 1;
+      if (msg.kind === 'rapor') {
+        runReportExtracts.set(msg.raporIndex, parsed);
+      } else if (msg.kind === 'radyoloji') {
+        runRadExtracts.set(msg.radIndex, parsed);
+      } else if (msg.kind === 'lab') {
+        runLabPdfTexts[msg.filename] = parsed.text;
+        runLabPdfTexts[`__panel_${msg.panelIndex}`] = parsed.text;
       }
     } catch (err) {
-      console.warn('PDF parse skipped for', item.filename, err);
+      console.warn('PDF çözümleme atlandı:', msg.filename, err);
+    }
+  });
+}
+
+async function finalizeArchive(runId, rawData) {
+  if (runId !== currentRunId) return;
+
+  updateProgressUI(9, TOTAL_STAGES, `PDF metinleri tamamlanıyor (${runPdfProcessedCount} adet)...`);
+  await runPdfQueue;
+  if (runId !== currentRunId) return;
+
+  // Attach extracted PDF texts back onto rawData
+  for (const [idx, parsed] of runReportExtracts.entries()) {
+    if (rawData.raporlar?.raporlar?.[idx]) {
+      rawData.raporlar.raporlar[idx].pdf = {
+        ...(rawData.raporlar.raporlar[idx].pdf || {}),
+        pageCount: parsed.pageCount,
+        extractedText: parsed.text
+      };
+    }
+  }
+  for (const [idx, parsed] of runRadExtracts.entries()) {
+    if (rawData.radyoloji?.[idx]) {
+      rawData.radyoloji[idx].pdf = {
+        ...(rawData.radyoloji[idx].pdf || {}),
+        pageCount: parsed.pageCount,
+        extractedText: parsed.text
+      };
+    }
+  }
+  for (let i = 0; i < (rawData.tahlillerim?.panels || []).length; i++) {
+    const p = rawData.tahlillerim.panels[i];
+    if (p.pdf && runLabPdfTexts[`__panel_${i}`]) {
+      p.pdf.extractedText = runLabPdfTexts[`__panel_${i}`];
     }
   }
 
-  updateProgressUI(10, 10, 'Markdown klasör yapısı derleniyor...');
-  const { files, stats } = buildMarkdownArchive(rawData, { labPdfTexts });
+  updateProgressUI(10, TOTAL_STAGES, 'Markdown klasör yapısı derleniyor...');
+  const { files, stats } = buildMarkdownArchive(rawData, { labPdfTexts: runLabPdfTexts });
 
   const allEntries = new Map();
   for (const [p, content] of files.entries()) {
     allEntries.set(p, content);
   }
-  for (const pf of rawPdfFiles) {
+  for (const pf of runRawPdfFiles) {
     allEntries.set(pf.path, pf.content);
   }
   if (el.optRawJson.checked) {
     allEntries.set('enabiz_ham_veri.json', JSON.stringify(rawData, null, 2));
   }
 
-  return { entries: allEntries, stats };
+  if (runId !== currentRunId) return;
+  renderResults(allEntries, stats);
+  setRunningState(false);
+  disconnectActivePort();
 }
 
 function renderResults(entries, stats) {
   lastArchiveEntries = entries;
   lastStats = stats;
 
+  const encoder = new TextEncoder();
   const totalBytes = Array.from(entries.values()).reduce(
-    (sum, v) => sum + (typeof v === 'string' ? new TextEncoder().encode(v).length : v.byteLength),
+    (sum, v) => sum + (typeof v === 'string' ? encoder.encode(v).length : v.byteLength),
     0
   );
   el.resultMeta.textContent = `${entries.size} dosya · ${(totalBytes / 1024).toFixed(0)} KB · ${el.progressTimer.textContent}`;
 
-  const gridItems = [
-    { val: stats.totalVisits, lbl: 'Ziyaret' },
-    { val: stats.totalIslemRows, lbl: 'Tıbbi İşlem' },
-    { val: `${stats.labRowsCount} (${stats.oorCount}!)`, lbl: 'Tahlil (Ref. Dışı)' },
-    { val: stats.radCount, lbl: 'Radyoloji' },
-    { val: stats.raporCount, lbl: 'Sağlık Raporu' },
-    { val: stats.receteCount, lbl: 'Reçete' }
-  ];
-  el.statsGrid.innerHTML = gridItems
-    .map(
-      (g) => `<div class="stat-box"><div class="stat-val">${g.val}</div><div class="stat-lbl">${g.lbl}</div></div>`
-    )
-    .join('');
+  const hasWarnings = Boolean(stats.warnings?.length);
+  el.resultBadge.textContent = hasWarnings ? 'Kısmi Arşiv (Uyarı Var)' : 'Arşiv Hazır';
+  el.resultBadge.classList.toggle('is-warn', hasWarnings);
 
-  el.fileTree.innerHTML = '';
-  const encoder = new TextEncoder();
+  el.warningList.textContent = '';
+  if (hasWarnings) {
+    el.warningTitle.textContent = `Dikkat: ${stats.warnings.length} uyarı tespit edildi`;
+    for (const w of stats.warnings) {
+      const li = document.createElement('li');
+      li.textContent = w;
+      el.warningList.appendChild(li);
+    }
+    el.warningBanner.classList.remove('hidden');
+  } else {
+    el.warningBanner.classList.add('hidden');
+  }
+
+  // Safe DOM creation (no innerHTML with dynamic data)
+  el.statsGrid.textContent = '';
+  const gridItems = [
+    { val: String(stats.totalVisits), lbl: 'Ziyaret' },
+    { val: String(stats.totalIslemRows), lbl: 'Tıbbi İşlem' },
+    { val: `${stats.labRowsCount} (${stats.oorCount}!)`, lbl: 'Tahlil (Ref. Dışı)' },
+    { val: String(stats.radCount), lbl: 'Radyoloji' },
+    { val: String(stats.raporCount), lbl: 'Sağlık Raporu' },
+    { val: String(stats.receteCount), lbl: 'Reçete' }
+  ];
+  for (const g of gridItems) {
+    const box = document.createElement('div');
+    box.className = 'stat-box';
+    const valEl = document.createElement('div');
+    valEl.className = 'stat-val';
+    valEl.textContent = g.val;
+    const lblEl = document.createElement('div');
+    lblEl.className = 'stat-lbl';
+    lblEl.textContent = g.lbl;
+    box.append(valEl, lblEl);
+    el.statsGrid.appendChild(box);
+  }
+
+  el.fileTree.textContent = '';
   for (const [path, content] of entries.entries()) {
     const byteLen = typeof content === 'string' ? encoder.encode(content).length : content.byteLength;
     const sizeStr = byteLen >= 1024 ? `${(byteLen / 1024).toFixed(1)} KB` : `${byteLen} B`;
-    const row = document.createElement('div');
+
+    const row = document.createElement('button');
+    row.type = 'button';
     row.className = 'file-item';
-    row.innerHTML = `<span>${path}</span><span class="file-size">${sizeStr}</span>`;
+    const pathSpan = document.createElement('span');
+    pathSpan.textContent = path;
+    const sizeSpan = document.createElement('span');
+    sizeSpan.className = 'file-size';
+    sizeSpan.textContent = sizeStr;
+    row.append(pathSpan, sizeSpan);
+
     row.addEventListener('click', () => {
-      if (typeof content !== 'string') {
-        el.modalTitle.textContent = path;
-        el.modalContent.textContent = `[İkili PDF dosyası — ${(byteLen / 1024).toFixed(1)} KB]`;
-      } else {
-        el.modalTitle.textContent = path;
-        el.modalContent.textContent = content;
-      }
+      lastFocusedElement = row;
+      el.modalTitle.textContent = path;
+      el.modalContent.textContent =
+        typeof content === 'string'
+          ? content
+          : `[İkili PDF dosyası — ${(byteLen / 1024).toFixed(1)} KB]`;
       el.previewModal.classList.remove('hidden');
+      el.btnCloseModal.focus();
     });
     el.fileTree.appendChild(row);
   }
@@ -286,12 +424,18 @@ function renderResults(entries, stats) {
   el.resultCard.classList.remove('hidden');
 }
 
+function closeModal() {
+  if (el.previewModal.classList.contains('hidden')) return;
+  el.previewModal.classList.add('hidden');
+  if (lastFocusedElement && typeof lastFocusedElement.focus === 'function') {
+    lastFocusedElement.focus();
+    lastFocusedElement = null;
+  }
+}
+
 async function handleStartClick() {
   if (isRunning) {
-    if (activeTabId) {
-      chrome.tabs.sendMessage(activeTabId, { type: 'CANCEL_EXPORT' }).catch(() => {});
-    }
-    setRunningState(false);
+    cancelCurrentRun();
     return;
   }
 
@@ -303,40 +447,72 @@ async function handleStartClick() {
   }
 
   activeTabId = tab.id;
-  collectedPdfBlobs = [];
+  disconnectActivePort();
+  resetRunBuffers();
+
+  const runId = ++currentRunId;
+  const options = {
+    startYear: el.startYear.value,
+    endYear: el.endYear.value,
+    includeReportPdfs: el.optReportPdfs.checked,
+    includeLabPdfTimes: el.optLabTimes.checked,
+    includeRawPdfs: el.optRawPdfs.checked
+  };
+
   setRunningState(true);
-  updateProgressUI(1, 10, 'e-Nabız bağlantısı başlatılıyor...');
+  updateProgressUI(1, TOTAL_STAGES, 'e-Nabız bağlantısı başlatılıyor...');
+  resetWatchdog(runId);
 
   try {
-    const res = await chrome.tabs.sendMessage(tab.id, {
-      type: 'START_EXPORT',
-      options: {
-        startYear: el.startYear.value,
-        endYear: el.endYear.value,
-        includeReportPdfs: el.optReportPdfs.checked,
-        includeLabPdfTimes: el.optLabTimes.checked,
-        includeRawPdfs: el.optRawPdfs.checked
+    const port = chrome.tabs.connect(tab.id, { name: 'enabiz-export' });
+    activePort = port;
+
+    port.onMessage.addListener((msg) => {
+      if (!msg || typeof msg !== 'object') return;
+      if (msg.runId !== currentRunId) return; // Strict run isolation
+
+      resetWatchdog(runId);
+
+      if (msg.type === 'EXPORT_PROGRESS') {
+        updateProgressUI(msg.stageIndex || 1, msg.totalStages || TOTAL_STAGES, msg.label || '');
+      } else if (msg.type === 'EXPORT_PDF_BLOB') {
+        enqueuePdfBlob(runId, msg, options);
+      } else if (msg.type === 'EXPORT_COMPLETE') {
+        clearWatchdog();
+        finalizeArchive(runId, msg.data).catch((err) => {
+          if (runId === currentRunId) {
+            setRunningState(false);
+            disconnectActivePort();
+            showError(`Arşiv derleme hatası: ${err?.message || err}`);
+          }
+        });
+      } else if (msg.type === 'EXPORT_ERROR') {
+        clearWatchdog();
+        disconnectActivePort();
+        setRunningState(false);
+        el.progressCard.classList.add('hidden');
+        if (msg.sessionExpired) {
+          showError('e-Nabız oturumunuzun süresi dolmuş. Lütfen e-Nabız sayfasını yenileyip tekrar giriş yapın.');
+        } else if (!msg.cancelled) {
+          showError(msg.error || 'Veriler çekilirken beklenmeyen bir hata oluştu.');
+        }
       }
     });
 
-    if (!res?.ok) {
-      if (res?.cancelled) {
+    port.onDisconnect.addListener(() => {
+      if (activePort === port) activePort = null;
+      if (isRunning && runId === currentRunId) {
+        clearWatchdog();
+        setRunningState(false);
         el.progressCard.classList.add('hidden');
-      } else if (res?.sessionExpired) {
-        showError('e-Nabız oturumunuzun süresi dolmuş. Lütfen e-Nabız sayfasını yenileyip tekrar giriş yapın.');
-      } else {
-        showError(res?.error || 'Veriler çekilirken beklenmeyen bir hata oluştu.');
+        showError('e-Nabız sekmesiyle bağlantı kesildi (sayfa yenilenmiş veya kapatılmış olabilir).');
       }
-      setRunningState(false);
-      return;
-    }
+    });
 
-    const { entries, stats } = await processPdfsAndBuildArchive(res.data);
-    renderResults(entries, stats);
+    port.postMessage({ type: 'START_EXPORT', runId, options });
   } catch (err) {
-    showError(`İletişim hatası: ${err?.message || err}`);
-  } finally {
     setRunningState(false);
+    showError(`Bağlantı hatası: ${err?.message || err}`);
   }
 }
 
@@ -399,13 +575,15 @@ async function handleCopyPrompt() {
   }, 2200);
 }
 
-chrome.runtime.onMessage.addListener((msg) => {
-  if (!msg || typeof msg !== 'object') return;
-  if (msg.type === 'EXPORT_PROGRESS' && isRunning) {
-    updateProgressUI(msg.stageIndex || 1, 10, msg.label || '');
-  } else if (msg.type === 'EXPORT_PDF_BLOB' && isRunning) {
-    collectedPdfBlobs.push(msg);
+window.addEventListener('beforeunload', (e) => {
+  if (isRunning) {
+    e.preventDefault();
+    e.returnValue = '';
   }
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeModal();
 });
 
 chrome.tabs.onActivated.addListener(() => refreshTabStatus());
@@ -415,13 +593,14 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   }
 });
 
-el.btnOpenEnabiz.addEventListener('click', () => chrome.tabs.create({ url: ENABIZ_ZİYARET_URL }));
+el.btnOpenEnabiz.addEventListener('click', () => chrome.tabs.create({ url: ENABIZ_ZIYARET_URL }));
 el.btnRecheck.addEventListener('click', refreshTabStatus);
 el.btnStart.addEventListener('click', handleStartClick);
 el.btnDownloadZip.addEventListener('click', handleDownloadZip);
 el.btnSaveFolder.addEventListener('click', handleSaveFolder);
 el.btnCopyPrompt.addEventListener('click', handleCopyPrompt);
-el.btnCloseModal.addEventListener('click', () => el.previewModal.classList.add('hidden'));
-el.modalBackdrop.addEventListener('click', () => el.previewModal.classList.add('hidden'));
+el.btnCloseModal.addEventListener('click', closeModal);
+el.modalBackdrop.addEventListener('click', closeModal);
 
+populateYearDropdowns();
 refreshTabStatus();

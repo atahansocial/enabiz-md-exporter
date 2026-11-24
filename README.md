@@ -105,13 +105,16 @@ src/content.js ──(IPC + PDF chunk stream)──► src/sidepanel.js
                                                └──► src/lib/zip.js (UTF-8 Deflate ZIP) / Klasör
 ```
 
-- [manifest.json](manifest.json) — Manifest V3 yapılandırması ve sıkı CSP kuralları
+- [manifest.json](manifest.json) — Manifest V3 yapılandırması (`minimum_chrome_version: 119`) ve sıkı CSP kuralları
 - [src/background.js](src/background.js) — Yan panel açılış davranışı
-- [src/content.js](src/content.js) — Yıl keşfi, oturum kontrolü ve tüm e-Nabız uç noktalarından salt okunur veri toplama
+- [src/lib/dom-parsers.js](src/lib/dom-parsers.js) — Türkçe başlık eşlemeli ve Node'da test edilebilir paylaşılan DOM ayrıştırıcıları
+- [src/content.js](src/content.js) — Yıl keşfi, zaman aşımlı/uyarlanabilir hızda salt okunur veri toplama ve kalıcı port akışı
+- [src/sidepanel.js](src/sidepanel.js) — Watchdog, `runId` izolasyonu, aşamalı PDF işleme ve erişilebilir yan panel arayüzü
 - [src/lib/pdf-extractor.js](src/lib/pdf-extractor.js) — Çevrimdışı `pdf.js` metin çıkarımı ve Türkçe rapor temizleyici
-- [src/lib/markdown-builder.js](src/lib/markdown-builder.js) — Tanı/tahlil analizi ve Markdown klasör üreticisi
+- [src/lib/markdown-builder.js](src/lib/markdown-builder.js) — Tanı/tahlil analizi, kısmi başarı uyarıları ve Markdown klasör üreticisi
 - [src/lib/zip.js](src/lib/zip.js) — Bağımlılıksız UTF-8 + Deflate ZIP paketleyici
 - [tests/verify-builder.mjs](tests/verify-builder.mjs) — Sentetik veriyle uçtan uca Markdown & ZIP doğrulama paketi
+- [tests/verify-parsers.mjs](tests/verify-parsers.mjs) — Seçici ve başlık eşlemeli DOM ayrıştırıcı testleri
 
 ---
 
@@ -120,18 +123,19 @@ src/content.js ──(IPC + PDF chunk stream)──► src/sidepanel.js
 Katkılarınız çok değerli! Başlamak için:
 - Rehber: [CONTRIBUTING.md](CONTRIBUTING.md)
 - Davranış Kuralları: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- Değişiklik Günlüğü: [CHANGELOG.md](CHANGELOG.md)
 - Hata Bildirimi / Özellik İsteği: [Issues](https://github.com/atahansocial/enabiz-md-exporter/issues)
 
-Testleri yerel olarak çalıştırmak için (`npm install` gerekmez):
+Testleri yerel olarak çalıştırmak için (`npm install` gerekmez, Node.js 20+ yeterlidir):
 ```bash
-node tests/verify-builder.mjs
+npm test
 ```
 
 ### Yol Haritası (Roadmap)
 - [ ] Chrome Web Store yayını için paketleme ve inceleme süreci
 - [ ] Tahlil parametreleri için yıl bazlı trend karşılaştırma özeti (`07-trendler.md`)
 - [ ] İngilizce arayüz seçeneği (TR / EN)
-- [ ] E-Nabız arayüz değişikliklerine karşı otomatik DOM seçici testleri
+- [x] E-Nabız arayüz değişikliklerine karşı otomatik DOM seçici testleri (`tests/verify-parsers.mjs`)
 
 ---
 

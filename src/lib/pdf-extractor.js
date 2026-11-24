@@ -175,7 +175,7 @@ export function cleanOfficialReportText(rawText, reportMeta = {}) {
 
     // Strip e-signature, legal & verification boilerplate
     if (
-      /5070 sayılı|elektronik imza|e-imza|imzalanmıştır|turkiye\.gov\.tr|doğrulama kodu|barkod no|karekod|belge doğrulama|e-nabız üzerinden|ssl|güvenli elektronik|sayfa \d+\s*\/\s*\d+/i.test(
+      /5070 sayılı|elektronik imza|e-imza|imzalanmıştır|turkiye\.gov\.tr|doğrulama kodu|^(doğrulama\s*)?barkod\s*(no|numarası)?\s*[:\-]|karekod|belge doğrulama|e-nabız üzerinden|ssl|güvenli elektronik|sayfa \d+\s*\/\s*\d+/i.test(
         ln
       )
     ) {

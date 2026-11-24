@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   buildMarkdownArchive,
   classifyLabValue,
-  cleanRadiologyBody
+  cleanRadiologyBody,
+  dateSortKey,
+  formatHastalikRow,
+  safeCodeFence
 } from '../src/lib/markdown-builder.js';
 import {
   cleanOfficialReportText,
@@ -12,7 +17,7 @@ import {
 } from '../src/lib/pdf-extractor.js';
 import { createZipBytes } from '../src/lib/zip.js';
 
-const TEST_ZIP_PATH = '/tmp/test-enabiz-export.zip';
+const TEST_ZIP_PATH = path.join(os.tmpdir(), `test-enabiz-export-${process.pid}.zip`);
 
 function buildSyntheticFixture() {
   return {
@@ -291,6 +296,53 @@ async function main() {
   } finally {
     fs.rmSync(TEST_ZIP_PATH, { force: true });
   }
+
+  // 5. v1.1.0 hardening checks: ISO dateSortKey, unsorted visits oldest/newest,
+  //    safeCodeFence for embedded triple backticks, header-shifted Ilaclarim,
+  //    formatHastalikRow dedup, and partial-failure sectionStatuses warnings
+  assert.equal(dateSortKey('2026-05-15 10:30'), dateSortKey('15.05.2026 10:30'));
+  assert.ok(dateSortKey('2026-05-15 10:30') > dateSortKey('2026-05-15 09:00'));
+  assert.ok(dateSortKey('15-05-2026') > 0);
+
+  const fenced = safeCodeFence('Satır 1\n```js\nalert(1)\n```\nSatır 2', 'text');
+  assert.ok(fenced.startsWith('````text\n') && fenced.endsWith('\n````'));
+
+  const deduped = formatHastalikRow({
+    tarih: '15.05.2026 10:30',
+    tani: 'J06.9 - AKUT ÜST SOLUNUM',
+    klinik: 'İÇ HASTALIKLARI',
+    hekim: 'DR. AYŞE YILMAZ',
+    detayArgs: ['J06.9 - AKUT ÜST SOLUNUM', 'İÇ HASTALIKLARI', 'Poliklinik Kaydı'],
+    sysTakipNo: 'SYS-1'
+  });
+  assert.equal(deduped[1], 'J06.9 - AKUT ÜST SOLUNUM (Poliklinik Kaydı)');
+
+  const hardenedInput = buildSyntheticFixture();
+  hardenedInput.visits = [...hardenedInput.visits].reverse(); // oldest first -> test chronological fix
+  hardenedInput.raporlar.raporlar[0].pdf.extractedText += '\n```\nörnek kod bloğu\n```';
+  hardenedInput.ilaclarim = {
+    headers: ['Reçete No', 'Barkod', 'İlaç Adı', 'Tarih', 'Kutu Adedi', 'Hastane', 'Klinik'],
+    rows: [
+      { cells: ['RX-SHIFTED', '8690000000777', 'ÖRNEK ŞURUP 100 ML', '15.05.2026', '2', 'ÖRNEK MERKEZ', 'KBB'] }
+    ]
+  };
+  hardenedInput.sectionStatuses = [
+    { key: 'ziyaretler', label: 'Ziyaretler', ok: true, status: 200, recordCount: 3, error: null },
+    { key: 'hastaliklar', label: 'Hastalıklarım', ok: false, status: 500, recordCount: 0, error: 'HTTP 500' }
+  ];
+
+  const hardened = buildMarkdownArchive(hardenedInput);
+  assert.equal(hardened.stats.oldestVisit, '04.04.2016');
+  assert.equal(hardened.stats.newestVisit, '15.05.2026');
+  assert.equal(hardened.stats.raporPdfExtractedCount, 1);
+  assert.equal(hardened.stats.failedSections.length, 1);
+  assert.ok(hardened.files.get('04-raporlar.md').includes('````text\n'));
+  assert.ok(hardened.files.get('05-ilaclar-ve-receteler.md').includes('`RX-SHIFTED` | ÖRNEK ŞURUP 100 ML | `8690000000777`'));
+  const readmeWarn = hardened.files.get('README.md');
+  assert.ok(readmeWarn.includes('> [!WARNING]'));
+  assert.ok(readmeWarn.includes('## Dışa Aktarım Doğrulama Özeti'));
+  assert.ok(readmeWarn.includes('Hastalıklarım') && readmeWarn.includes('HTTP 500'));
+  console.log('✓ v1.1.0 hardening checks passed (ISO dates, sort order, safeCodeFence, header map, dedup, partial-failure report)');
 }
 
 main().catch((err) => {

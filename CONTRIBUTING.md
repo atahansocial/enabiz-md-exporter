@@ -2,7 +2,7 @@
 
 **e-Nabız Markdown Arşivleyici**'ye katkıda bulunmak istediğiniz için teşekkürler! Bu proje tamamen açık kaynaklıdır ve tüm geliştiricilerin, araştırmacıların ve kullanıcıların katkılarına açıktır.
 
-> **English Summary:** Contributions are very welcome! No build step is required (`pdfjs-dist` is pre-bundled in `vendor/`). Load the folder via `chrome://extensions` → **Load unpacked**, run `node tests/verify-builder.mjs` before opening a PR, and **never** commit or paste any real patient/health/TCKN data into issues or pull requests.
+> **English Summary:** Contributions are very welcome! No build step is required (`pdfjs-dist` is pre-bundled in `vendor/`). Load the folder via `chrome://extensions` → **Load unpacked** (Chrome 119+), run `npm test` (requires Node 20+) before opening a PR, and **never** commit or paste any real patient/health/TCKN data into issues or pull requests.
 
 ---
 
@@ -36,14 +36,17 @@ Değişikliklerinizi göndermeden önce aşağıdaki komutların hatasız geçti
 ```bash
 # Sözdizimi kontrolleri
 node --check src/background.js
+node --check src/lib/dom-parsers.js
 node --check src/content.js
 node --check src/sidepanel.js
 node --check src/lib/pdf-extractor.js
 node --check src/lib/markdown-builder.js
 node --check src/lib/zip.js
+node --check tests/verify-builder.mjs
+node --check tests/verify-parsers.mjs
 
-# Sentetik arşiv & ZIP bütünlük testleri
-node tests/verify-builder.mjs
+# Sentetik arşiv, DOM ayrıştırıcı & ZIP bütünlük testleri
+npm test
 ```
 
 ---

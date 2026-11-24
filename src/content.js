@@ -7,11 +7,20 @@
   if (window.__enabizMdExporterLoaded) return;
   window.__enabizMdExporterLoaded = true;
 
+  const P = globalThis.__enabizDomParsers;
+  if (!P) {
+    console.error('[e-Nabız Arşivleyici] __enabizDomParsers yüklenemedi.');
+    return;
+  }
+
+  const TOTAL_STAGES = 10;
+  const REQUEST_TIMEOUT_MS = 25000;
+
   let activeRunId = 0;
   let cancelRequested = false;
+  let currentDelayMs = 120;
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const cleanText = (el) => (el ? el.textContent.replace(/\s+/g, ' ').trim() : '');
   const htmlToDoc = (html) => new DOMParser().parseFromString(html || '', 'text/html');
 
   function isSessionExpiredResponse(res, text = '') {
@@ -28,16 +37,16 @@
     if (bodyTxt.includes('e-Devlet Kapısı') && bodyTxt.includes('Kimlik Doğrulama')) return false;
     return Boolean(
       document.querySelector('input[name="__RequestVerificationToken"]') ||
-      document.querySelector('a[href*="/Account/Logout"], a[href*="/Home/Profil"], .ziyaretCardList, main')
+        document.querySelector('a[href*="/Account/Logout"], a[href*="/Home/Profil"], .ziyaretCardList, main')
     );
   }
 
   function detectHeaderName() {
     const el = document.querySelector('a[href="#"].dropdown-toggle, header a[aria-expanded], .userName, .kullaniciAdi');
-    const txt = cleanText(el);
+    const txt = P.cleanText(el);
     if (txt && txt.length >= 4 && !/çıkış|menü|profil/i.test(txt)) return txt;
     const candidate = Array.from(document.querySelectorAll('header a'))
-      .map((a) => cleanText(a))
+      .map((a) => P.cleanText(a))
       .find((t) => /^[A-ZÇĞİÖŞÜ\s]{5,}$/.test(t));
     return candidate || '';
   }
@@ -57,65 +66,50 @@
     return b.length >= 5 && b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46 && b[4] === 0x2d;
   }
 
-  function parseTable(tbl) {
-    if (!tbl) return { headers: [], rows: [] };
-    const headers = Array.from(tbl.querySelectorAll('thead th')).map((th) => cleanText(th));
-    const rows = Array.from(tbl.querySelectorAll('tbody tr'))
-      .map((tr) => ({
-        cells: Array.from(tr.querySelectorAll('td')).map((td) => cleanText(td)),
-        onclicks: Array.from(tr.querySelectorAll('[onclick]')).map((el) => ({
-          text: cleanText(el),
-          onclick: el.getAttribute('onclick') || ''
-        }))
-      }))
-      .filter(
-        (r) =>
-          r.cells.length > 0 &&
-          !(r.cells.length === 1 && /kayıt|bulunmamaktadır|veri yok|bulunamadı|listelenecek/i.test(r.cells[0]))
-      );
-    return { headers, rows };
+  function bumpDelay() {
+    currentDelayMs = currentDelayMs < 350 ? 350 : Math.min(700, currentDelayMs * 2);
   }
 
-  function parseGenericPane(paneEl) {
-    if (!paneEl) return null;
-    const tbl = paneEl.querySelector('table');
-    if (tbl) {
-      const headers = Array.from(tbl.querySelectorAll('thead th')).map((th) => cleanText(th));
-      const rows = Array.from(tbl.querySelectorAll('tbody tr'))
-        .map((tr) => Array.from(tr.querySelectorAll('td')).map((td) => cleanText(td)))
-        .filter(
-          (r) =>
-            r.length > 0 &&
-            !(r.length === 1 && /kayıt|bulunmamaktadır|veri yok|bulunamadı/i.test(r[0]))
-        );
-      if (rows.length === 0) return null;
-      return { headers, rows };
+  function relaxDelay() {
+    if (currentDelayMs > 120) {
+      currentDelayMs = Math.max(120, Math.floor(currentDelayMs * 0.85));
     }
-    const txt = cleanText(paneEl);
-    if (!txt || /^Kayıtlı bilginiz bulunmamaktadır\.?$/i.test(txt)) return null;
-    return { text: txt };
   }
 
   async function safeFetchText(url, opts = {}) {
     for (let attempt = 0; attempt < 2; attempt++) {
       if (cancelRequested) return { ok: false, cancelled: true, status: 0, text: '' };
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
       try {
-        const res = await fetch(url, { credentials: 'include', ...opts });
+        const res = await fetch(url, { credentials: 'include', signal: controller.signal, ...opts });
         const text = await res.text();
+        clearTimeout(timer);
         if (isSessionExpiredResponse(res, text)) {
           return { ok: false, sessionExpired: true, status: res.status, url: res.url, text: '' };
         }
-        if ((res.status === 429 || res.status >= 500) && attempt === 0) {
-          await sleep(600);
-          continue;
+        if (res.status === 429 || res.status >= 500) {
+          bumpDelay();
+          if (attempt === 0) {
+            await sleep(600);
+            continue;
+          }
+        } else if (res.ok) {
+          relaxDelay();
         }
         return { ok: res.ok, status: res.status, url: res.url, text };
       } catch (err) {
+        clearTimeout(timer);
         if (attempt === 0) {
           await sleep(500);
           continue;
         }
-        return { ok: false, status: 0, error: String(err), text: '' };
+        return {
+          ok: false,
+          status: 0,
+          error: err?.name === 'AbortError' ? 'Zaman aşımı (25 sn)' : String(err),
+          text: ''
+        };
       }
     }
     return { ok: false, status: 0, text: '' };
@@ -124,15 +118,24 @@
   async function safeFetchBuffer(url, opts = {}) {
     for (let attempt = 0; attempt < 2; attempt++) {
       if (cancelRequested) return { ok: false, cancelled: true, status: 0, buffer: null };
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
       try {
-        const res = await fetch(url, { credentials: 'include', ...opts });
+        const res = await fetch(url, { credentials: 'include', signal: controller.signal, ...opts });
         if (isSessionExpiredResponse(res, '')) {
+          clearTimeout(timer);
           return { ok: false, sessionExpired: true, status: res.status, buffer: null };
         }
         const buffer = await res.arrayBuffer();
-        if ((res.status === 429 || res.status >= 500) && attempt === 0) {
-          await sleep(600);
-          continue;
+        clearTimeout(timer);
+        if (res.status === 429 || res.status >= 500) {
+          bumpDelay();
+          if (attempt === 0) {
+            await sleep(600);
+            continue;
+          }
+        } else if (res.ok) {
+          relaxDelay();
         }
         return {
           ok: res.ok,
@@ -141,11 +144,17 @@
           buffer
         };
       } catch (err) {
+        clearTimeout(timer);
         if (attempt === 0) {
           await sleep(500);
           continue;
         }
-        return { ok: false, status: 0, error: String(err), buffer: null };
+        return {
+          ok: false,
+          status: 0,
+          error: err?.name === 'AbortError' ? 'Zaman aşımı (25 sn)' : String(err),
+          buffer: null
+        };
       }
     }
     return { ok: false, status: 0, buffer: null };
@@ -164,198 +173,39 @@
     });
   }
 
-  function emitProgress(runId, payload) {
-    try {
-      chrome.runtime.sendMessage({ type: 'EXPORT_PROGRESS', runId, ...payload }).catch(() => {});
-    } catch {
-      // Ignore if sidepanel was closed temporarily
-    }
-  }
+  async function runExportOnPort(port, runId, options = {}) {
+    activeRunId = runId;
+    cancelRequested = false;
+    currentDelayMs = 120;
 
-  function emitPdfBlob(runId, blobPayload) {
-    try {
-      chrome.runtime.sendMessage({ type: 'EXPORT_PDF_BLOB', runId, ...blobPayload }).catch(() => {});
-    } catch {
-      // Ignore
-    }
-  }
+    const fetchReportPdfs = Boolean(options.includeReportPdfs || options.includeRawPdfs);
+    const fetchLabPdfs = Boolean(options.includeLabPdfTimes || options.includeRawPdfs);
+    const currentYearStr = String(new Date().getFullYear());
 
-  function parseVisitCardsFromDoc(doc) {
-    return Array.from(doc.querySelectorAll('.ziyaretCardList')).map((card, idx) => {
-      const tarih = cleanText(card.querySelector('.zTarihS'));
-      const degerOnclick = card.querySelector('.rating')?.getAttribute('onclick') || '';
-      const dtMatch = degerOnclick.match(/'(\d{2}\.\d{2}\.\d{4}\s+\d{2}:\d{2}:\d{2})'/);
-      const tarihSaat = dtMatch ? dtMatch[1] : tarih;
-      const hastane = cleanText(card.querySelector('.card-text'));
-      const sysRaw = cleanText(card.querySelector('.hastaneTakipNo'));
-      const sysTakipNo = sysRaw.replace(/^Hastane Takip No:\s*/i, '').trim();
-      const brans = cleanText(card.querySelector('.drBrans'));
-      const hekim = cleanText(card.querySelector('.drAdi'));
-      const detayOnclick = card.querySelector('a.card-red-link')?.getAttribute('onclick') || '';
-      const urlMatch = detayOnclick.match(/url:\s*'([^']+)'/);
-      return {
-        index: idx + 1,
-        tarih,
-        tarihSaat,
-        hastane,
-        sysTakipNo,
-        brans,
-        hekim,
-        detayUrl: urlMatch ? urlMatch[1] : null,
-        detayStatus: null,
-        detayError: null,
-        detay: null
-      };
-    });
-  }
-
-  function parsePrescriptionTables(doc) {
-    const yazanTbl = doc.querySelector('table[id*="Yazan"], table[id*="yazan"]');
-    const satilanTbl = doc.querySelector('table[id*="Satilan"], table[id*="satilan"], table[id*="Satılan"]');
-    const yazilanIlaclar = yazanTbl
-      ? Array.from(yazanTbl.querySelectorAll('tbody tr'))
-          .map((tr) => {
-            const tds = tr.querySelectorAll('td');
-            if (tds.length < 7) return null;
-            return {
-              barkod: cleanText(tds[0]),
-              ilacAdi: cleanText(tds[1]),
-              aciklama: cleanText(tds[2]),
-              doz: cleanText(tds[3]),
-              periyot: cleanText(tds[4]),
-              kullanimSekli: cleanText(tds[5]),
-              kullanimSayisi: cleanText(tds[6]),
-              kutuAdedi: cleanText(tds[7])
-            };
-          })
-          .filter(Boolean)
-      : [];
-    const satilanIlaclar = satilanTbl
-      ? Array.from(satilanTbl.querySelectorAll('tbody tr'))
-          .map((tr) => {
-            const tds = tr.querySelectorAll('td');
-            if (tds.length < 2) return null;
-            return {
-              barkod: cleanText(tds[0]),
-              ilacAdi: cleanText(tds[1]),
-              kutuAdedi: cleanText(tds[2])
-            };
-          })
-          .filter(Boolean)
-      : [];
-    return { yazilanIlaclar, satilanIlaclar };
-  }
-
-  function parseTahlilPanels(doc) {
-    const stripLabel = (el) => {
-      if (!el) return '';
-      const clone = el.cloneNode(true);
-      clone.querySelectorAll('span').forEach((s) => s.remove());
-      return clone.textContent.replace(/\s+/g, ' ').trim();
+    const postMsg = (payload) => {
+      try {
+        port.postMessage({ runId, ...payload });
+      } catch {
+        // Port may already be disconnected
+      }
     };
 
-    const accItems = Array.from(doc.querySelectorAll('#accordionTahlilListe .accordion-item'));
-    const panels = [];
-    const pdfTargets = [];
+    const emitProgress = (stage, stageIndex, label, extra = {}) => {
+      postMsg({
+        type: 'EXPORT_PROGRESS',
+        stage,
+        stageIndex,
+        totalStages: TOTAL_STAGES,
+        label,
+        ...extra
+      });
+    };
 
-    accItems.forEach((item, panelIdx) => {
-      const tarih = cleanText(item.querySelector('.zTarihS'));
-      const hastane = cleanText(item.querySelector('.hastaneAdi'));
-      const normalSayisi = cleanText(item.querySelector('.refNormal'));
-      const refDisiSayisi = cleanText(item.querySelector('.refDisi'));
-
-      const btn = item.querySelector('a[onclick*="TahlillerPdfIndir"]');
-      const oc = btn ? btn.getAttribute('onclick') || '' : '';
-      const pm = oc.match(/TahlillerPdfIndir\('([^']*)',\s*'([^']*)',\s*'([^']*)'/);
-      if (pm && pm[3]) {
-        pdfTargets.push({
-          panelIndex: panelIdx,
-          tarih,
-          hastane,
-          dil: pm[1] || 'tr-TR',
-          cardTarih: pm[2] || tarih,
-          kurumKodu: pm[3]
-        });
+    const heartbeatTimer = setInterval(() => {
+      if (!cancelRequested && activeRunId === runId) {
+        postMsg({ type: 'HEARTBEAT', ts: Date.now() });
       }
-
-      const groups = [];
-      const singleRows = [];
-      let singleSys = null;
-
-      for (const tl of item.querySelectorAll('.tahlilList')) {
-        const redOc = tl.querySelector('a.islemBtn, a.kirmiziBtn')?.getAttribute('onclick') || '';
-        const sysMatch = redOc.match(/IslemRedModalGoster\('[^']*','([^']*)'/);
-        const sysTakipNo = sysMatch ? sysMatch[1] : null;
-        const rcs = Array.from(tl.querySelectorAll('.rowContainer'));
-
-        if (rcs.length > 0) {
-          const grpEl = tl.querySelector('.tahlilGroup');
-          const grpName = grpEl ? (grpEl.getAttribute('islemadi') || cleanText(grpEl)).trim() : 'Panel';
-          const rows = rcs
-            .map((rc) => {
-              const cols = Array.from(rc.querySelectorAll('.columnContainer'));
-              const statusCol = cols[cols.length - 1];
-              const statusClass = statusCol ? statusCol.className : '';
-              const isOutOfRange =
-                rc.getAttribute('subdurumkontrol') === '0' ||
-                (statusClass && !statusClass.includes('durumNormal') && /disi|kirmizi|danger|high|low/i.test(statusClass));
-              return {
-                islemAdi: stripLabel(cols[0]),
-                sonuc: stripLabel(cols[1]),
-                birim: stripLabel(cols[2]),
-                referans: stripLabel(cols[3]),
-                statusClass,
-                isOutOfRange
-              };
-            })
-            .filter((r) => r.islemAdi);
-          groups.push({ grupAdi: grpName, sysTakipNo, rows });
-        } else {
-          const nameEl = tl.querySelector('.tahlilHeader #islemAdi, .tahlilHeader [islemadi]');
-          const islemAdi = nameEl
-            ? (nameEl.getAttribute('islemadi') || cleanText(nameEl)).trim()
-            : cleanText(tl.querySelector('.tahlilHeader'));
-          const cols = Array.from(tl.querySelectorAll('.tahlilBody > .columnContainer'));
-          const statusTxt = cleanText(cols[0]);
-          const sonuc = stripLabel(cols[1]);
-          const birim = stripLabel(cols[2]);
-          const referans = stripLabel(cols[3]);
-          const boxEl = tl.querySelector('.tahlilHeader .degerDurumBox');
-          const isOutOfRange =
-            tl.getAttribute('subdurumkontrol') === '0' ||
-            (boxEl && boxEl.classList.contains('refDisi')) ||
-            /Referans Dışı/i.test(statusTxt);
-          if (sysTakipNo && !singleSys) singleSys = sysTakipNo;
-          if (islemAdi) {
-            singleRows.push({
-              islemAdi,
-              sonuc,
-              birim,
-              referans,
-              statusClass: isOutOfRange ? 'refDisi' : 'refNormal',
-              isOutOfRange
-            });
-          }
-        }
-      }
-
-      if (singleRows.length > 0) {
-        groups.push({ grupAdi: 'Tekil Tetkikler', sysTakipNo: singleSys, rows: singleRows });
-      }
-      panels.push({ tarih, hastane, normalSayisi, refDisiSayisi, groups });
-    });
-
-    return { panels, pdfTargets };
-  }
-
-  async function runExport(options = {}) {
-    const runId = ++activeRunId;
-    cancelRequested = false;
-
-    const totalStages = 9;
-    const includeReportPdfs = options.includeReportPdfs !== false;
-    const includeLabPdfTimes = options.includeLabPdfTimes !== false;
-    const currentYearStr = String(new Date().getFullYear());
+    }, 10000);
 
     const checkAbort = () => {
       if (cancelRequested || runId !== activeRunId) {
@@ -365,21 +215,31 @@
       }
     };
 
+    const sectionStatuses = [];
+    const errors = [];
+    const recordSection = (section, label, endpoint, res, recordCount = 0) => {
+      const ok = Boolean(res?.ok);
+      const status = res?.status ?? 0;
+      const errMsg = ok ? '' : res?.error || `HTTP ${status}`;
+      sectionStatuses.push({ section, label, endpoint, ok, status, recordCount, error: errMsg });
+      if (!ok) {
+        errors.push({ section, label, endpoint, status, error: errMsg });
+      }
+    };
+
     try {
-      // Stage 1: Session, XSRF token & year discovery + Profile
-      emitProgress(runId, {
-        stage: 'profil',
-        stageIndex: 1,
-        totalStages,
-        label: 'Oturum, yıl aralığı ve profil bilgileri alınıyor...'
-      });
+      // Stage 1: Session, XSRF token, year discovery & Profile
+      emitProgress('profil', 1, 'Oturum, yıl aralığı ve profil bilgileri alınıyor...');
 
       let xsrfToken = document.querySelector('input[name="__RequestVerificationToken"]')?.value || '';
       let visitsStartYear = options.startYear && options.startYear !== 'auto' ? String(options.startYear) : '';
       let visitsEndYear = options.endYear && options.endYear !== 'auto' ? String(options.endYear) : '';
 
       const ziyPage = await safeFetchText('/Home/Ziyaretlerim');
-      if (ziyPage.sessionExpired) return { ok: false, sessionExpired: true };
+      if (ziyPage.sessionExpired) {
+        postMsg({ type: 'EXPORT_ERROR', sessionExpired: true });
+        return;
+      }
       checkAbort();
 
       const ziyPageDoc = ziyPage.ok ? htmlToDoc(ziyPage.text) : document;
@@ -401,70 +261,39 @@
         visitsEndYear = endOpts.length ? String(Math.max(...endOpts.map(Number))) : currentYearStr;
       }
 
-      // Some e-Nabız secondary endpoints use 2017 or earliest option as start year
-      const minYearNum = Number(visitsStartYear);
-      const wideStartYear = String(Math.min(minYearNum, 2017));
+      const wideStartYear = String(Math.min(Number(visitsStartYear), 2017));
 
-      // Profile
-      const profil = {};
       const profRes = await safeFetchText('/Home/ProfilBilgilerim');
-      if (profRes.sessionExpired) return { ok: false, sessionExpired: true };
-      checkAbort();
-      if (profRes.ok) {
-        const pd = htmlToDoc(profRes.text);
-        const main = pd.querySelector('main') || pd.body;
-        const text = cleanText(main);
-        const boy = pd.querySelector('#boy')?.value || '';
-        const kilo = pd.querySelector('#kilo')?.value || '';
-        const kanGrubu = pd.querySelector('#kanGrubuSelect')?.selectedOptions?.[0]?.textContent?.trim() || '';
-        const yasadigiUlke = pd.querySelector('#yasadigiUlkeSelect')?.selectedOptions?.[0]?.textContent?.trim() || '';
-        const yasadigiSehir = pd.querySelector('#yasadigiSehirSelect')?.selectedOptions?.[0]?.textContent?.trim() || '';
-        const nameMatch = text.match(
-          /Profillerim\s+([A-ZÇĞİÖŞÜ\s]+?)\s+\d{11}\s+(\d{2}\.\d{2}\.\d{4})\s+([A-ZÇĞİÖŞÜa-zçğıöşü\s]+?)\s+Kimlik/
-        );
-        const asmMatch = text.match(/Aile Hekimi Bilgileriniz\s+(.+?)\s+Boy\s+Kilo/);
-        let vki = '';
-        const bNum = parseFloat(boy);
-        const kNum = parseFloat(kilo);
-        if (bNum > 0 && kNum > 0) vki = (kNum / (bNum / 100) ** 2).toFixed(1);
-
-        Object.assign(profil, {
-          adSoyad: nameMatch ? nameMatch[1].trim() : detectHeaderName(),
-          dogumTarihi: nameMatch ? nameMatch[2] : '',
-          dogumYeri: nameMatch ? nameMatch[3].trim() : '',
-          kanGrubu,
-          boyCm: boy,
-          kiloKg: kilo,
-          vki,
-          aileHekimiBirimi: asmMatch ? asmMatch[1].trim() : '',
-          yasadigiUlke,
-          yasadigiSehir
-        });
+      if (profRes.sessionExpired) {
+        postMsg({ type: 'EXPORT_ERROR', sessionExpired: true });
+        return;
       }
+      checkAbort();
+      const profil = profRes.ok
+        ? P.parseProfilFromDoc(htmlToDoc(profRes.text), detectHeaderName())
+        : { adSoyad: detectHeaderName() };
+      recordSection('profil', 'Profil Bilgilerim', '/Home/ProfilBilgilerim', profRes, profRes.ok ? 1 : 0);
 
       // Stage 2: Visits list
-      emitProgress(runId, {
-        stage: 'ziyaret_liste',
-        stageIndex: 2,
-        totalStages,
-        label: `Ziyaret listesi çekiliyor (${visitsStartYear}–${visitsEndYear})...`
-      });
+      emitProgress('ziyaret_liste', 2, `Ziyaret listesi çekiliyor (${visitsStartYear}–${visitsEndYear})...`);
 
       const ziyListRes = await postForm(
         '/Ziyaret/Index',
         { baslangicYil: visitsStartYear, bitisYil: visitsEndYear },
         xsrfToken
       );
-      if (ziyListRes.sessionExpired) return { ok: false, sessionExpired: true };
+      if (ziyListRes.sessionExpired) {
+        postMsg({ type: 'EXPORT_ERROR', sessionExpired: true });
+        return;
+      }
       checkAbort();
 
-      let visits = ziyListRes.ok ? parseVisitCardsFromDoc(htmlToDoc(ziyListRes.text)) : [];
-      if (visits.length === 0) {
-        visits = parseVisitCardsFromDoc(ziyPageDoc);
-      }
+      let visits = ziyListRes.ok ? P.parseVisitCardsFromDoc(htmlToDoc(ziyListRes.text)) : [];
+      if (visits.length === 0) visits = P.parseVisitCardsFromDoc(ziyPageDoc);
       if (visits.length === 0 && location.pathname.includes('/Home/Ziyaretlerim')) {
-        visits = parseVisitCardsFromDoc(document);
+        visits = P.parseVisitCardsFromDoc(document);
       }
+      recordSection('ziyaretler_liste', 'Ziyaret Listesi', '/Ziyaret/Index', ziyListRes, visits.length);
 
       const exportData = {
         metadata: {
@@ -495,18 +324,17 @@
         sigortalarim: { count: 0, rows: [], headers: [], status: null },
         acilDurumNotlarim: { text: '', tables: [], status: null },
         dokumanlarim: { tables: [], status: null },
-        errors: []
+        sectionStatuses,
+        errors
       };
 
       // Stage 3: Visit details (4 concurrent)
-      emitProgress(runId, {
-        stage: 'ziyaret_detay',
-        stageIndex: 3,
-        totalStages,
-        label: `Ziyaret detayları ve reçeteler çekiliyor (0/${visits.length})...`,
-        current: 0,
-        total: visits.length
-      });
+      emitProgress(
+        'ziyaret_detay',
+        3,
+        `Ziyaret detayları ve reçeteler çekiliyor (0/${visits.length})...`,
+        { current: 0, total: visits.length }
+      );
 
       const knownPaneIds = new Set([
         'pills-ziyaretlerimTani',
@@ -523,6 +351,7 @@
       async function processVisit(v) {
         if (!v.detayUrl) {
           v.detayStatus = 0;
+          v.detayError = 'detayUrl yok';
           return;
         }
         const r = await safeFetchText(v.detayUrl);
@@ -534,6 +363,7 @@
         v.detayStatus = r.status;
         if (!r.ok) {
           v.detayError = r.error || `HTTP ${r.status}`;
+          errors.push({ section: 'ziyaret_detay', label: `Ziyaret #${v.index} (${v.tarih})`, endpoint: v.detayUrl, status: r.status, error: v.detayError });
           return;
         }
         const doc = htmlToDoc(r.text);
@@ -544,17 +374,17 @@
 
         const tani = getRows('#tblZiyaretlerimTani', (_tr, tds) =>
           tds.length >= 4
-            ? { tarih: cleanText(tds[0]), tani: cleanText(tds[1]), hekim: cleanText(tds[2]), klinik: cleanText(tds[3]) }
+            ? { tarih: P.cleanText(tds[0]), tani: P.cleanText(tds[1]), hekim: P.cleanText(tds[2]), klinik: P.cleanText(tds[3]) }
             : null
         );
         const onTani = getRows('#tblZiyaretlerimOnTani', (_tr, tds) =>
           tds.length >= 4
-            ? { tarih: cleanText(tds[0]), onTani: cleanText(tds[1]), hekim: cleanText(tds[2]), klinik: cleanText(tds[3]) }
+            ? { tarih: P.cleanText(tds[0]), onTani: P.cleanText(tds[1]), hekim: P.cleanText(tds[2]), klinik: P.cleanText(tds[3]) }
             : null
         );
         const ekTani = getRows('#tblZiyaretlerimEkTani', (_tr, tds) =>
           tds.length >= 4
-            ? { tarih: cleanText(tds[0]), ekTani: cleanText(tds[1]), hekim: cleanText(tds[2]), klinik: cleanText(tds[3]) }
+            ? { tarih: P.cleanText(tds[0]), ekTani: P.cleanText(tds[1]), hekim: P.cleanText(tds[2]), klinik: P.cleanText(tds[3]) }
             : null
         );
         const islemler = getRows('#tblZiyaretlerimIslemler', (tr, tds) => {
@@ -562,10 +392,10 @@
           const oc = tr.querySelector('[onclick]')?.getAttribute('onclick') || '';
           const km = oc.match(/IslemKodu=([^&']+)/);
           return {
-            islemZamani: cleanText(tds[0]),
-            randevuZamani: cleanText(tds[1]),
-            adet: cleanText(tds[2]),
-            islemAdi: cleanText(tds[3]),
+            islemZamani: P.cleanText(tds[0]),
+            randevuZamani: P.cleanText(tds[1]),
+            adet: P.cleanText(tds[2]),
+            islemAdi: P.cleanText(tds[3]),
             islemKodu: km ? decodeURIComponent(km[1]).trim() : ''
           };
         });
@@ -574,9 +404,9 @@
           const oc = tr.querySelector('[onclick]')?.getAttribute('onclick') || '';
           const um = oc.match(/url:\s*'([^']+)'/);
           return {
-            receteTarihi: cleanText(tds[0]),
-            receteNo: cleanText(tds[1]),
-            receteTuru: cleanText(tds[2]),
+            receteTarihi: P.cleanText(tds[0]),
+            receteNo: P.cleanText(tds[1]),
+            receteTuru: P.cleanText(tds[2]),
             detayUrl: um ? um[1] : null,
             ilaclar: null
           };
@@ -587,7 +417,9 @@
           await sleep(80);
           const rr = await safeFetchText(rec.detayUrl);
           if (rr.ok) {
-            rec.ilaclar = { status: rr.status, ...parsePrescriptionTables(htmlToDoc(rr.text)) };
+            rec.ilaclar = { status: rr.status, ...P.parsePrescriptionTables(htmlToDoc(rr.text)) };
+          } else {
+            errors.push({ section: 'recete_detay', label: `Reçete ${rec.receteNo}`, endpoint: rec.detayUrl, status: rr.status, error: rr.error || `HTTP ${rr.status}` });
           }
         }
 
@@ -600,62 +432,44 @@
           return {
             ttId: tr.getAttribute('data-tt-id') || null,
             parentId: tr.getAttribute('data-tt-parent-id') || null,
-            tarih: cleanText(tds[0]),
-            islemAdi: cleanText(tds[1]),
-            sonuc: cleanText(tds[2]),
-            birim: cleanText(tds[3]),
-            referans: cleanText(tds[4]),
+            tarih: P.cleanText(tds[0]),
+            islemAdi: P.cleanText(tds[1]),
+            sonuc: P.cleanText(tds[2]),
+            birim: P.cleanText(tds[3]),
+            referans: P.cleanText(tds[4]),
             isOutOfRange
           };
         });
 
-        const rapor = parseGenericPane(doc.querySelector('#pills-ziyaretlerimRapor'));
-        const doktorMesaji = parseGenericPane(doc.querySelector('#pills-ziyaretlerimDoktorMesaji'));
-        const gozlukRecetesi = parseGenericPane(doc.querySelector('#pills-ziyaretlerimGozlukRecetesi'));
+        const rapor = P.parseGenericPane(doc.querySelector('#pills-ziyaretlerimRapor'));
+        const doktorMesaji = P.parseGenericPane(doc.querySelector('#pills-ziyaretlerimDoktorMesaji'));
+        const gozlukRecetesi = P.parseGenericPane(doc.querySelector('#pills-ziyaretlerimGozlukRecetesi'));
         const ekSekmeler = [];
         for (const p of doc.querySelectorAll('.tab-pane')) {
           if (!knownPaneIds.has(p.id)) {
-            const parsed = parseGenericPane(p);
+            const parsed = P.parseGenericPane(p);
             if (parsed) ekSekmeler.push({ id: p.id, ...parsed });
           }
         }
 
-        v.detay = {
-          tani,
-          onTani,
-          ekTani,
-          islemler,
-          receteler,
-          tahliller,
-          rapor,
-          doktorMesaji,
-          gozlukRecetesi,
-          ekSekmeler
-        };
+        v.detay = { tani, onTani, ekTani, islemler, receteler, tahliller, rapor, doktorMesaji, gozlukRecetesi, ekSekmeler };
       }
 
       for (let i = 0; i < visits.length; i += 4) {
         checkAbort();
         await Promise.all(visits.slice(i, i + 4).map(processVisit));
         const done = Math.min(i + 4, visits.length);
-        emitProgress(runId, {
-          stage: 'ziyaret_detay',
-          stageIndex: 3,
-          totalStages,
-          label: `Ziyaret detayları ve reçeteler çekiliyor (${done}/${visits.length})...`,
-          current: done,
-          total: visits.length
-        });
-        await sleep(120);
+        emitProgress(
+          'ziyaret_detay',
+          3,
+          `Ziyaret detayları ve reçeteler çekiliyor (${done}/${visits.length})...`,
+          { current: done, total: visits.length }
+        );
+        await sleep(currentDelayMs);
       }
 
       // Stage 4: Hastaliklarim + Ilaclarim + Recetelerim cross-check
-      emitProgress(runId, {
-        stage: 'tanilar_ilaclar',
-        stageIndex: 4,
-        totalStages,
-        label: 'Hastalıklarım ve İlaç/Reçete geçmişi çekiliyor...'
-      });
+      emitProgress('tanilar_ilaclar', 4, 'Hastalıklarım ve İlaç/Reçete geçmişi çekiliyor...');
       checkAbort();
 
       const hasRes = await postForm(
@@ -663,57 +477,43 @@
         { baslangicYili: wideStartYear, bitisYili: visitsEndYear },
         xsrfToken
       );
-      if (hasRes.sessionExpired) return { ok: false, sessionExpired: true };
+      if (hasRes.sessionExpired) {
+        postMsg({ type: 'EXPORT_ERROR', sessionExpired: true });
+        return;
+      }
       exportData.hastaliklarim.status = hasRes.status;
       if (hasRes.ok) {
-        const hd = htmlToDoc(hasRes.text);
-        const pt = parseTable(hd.querySelector('#tblHastaliklarim') || hd.querySelector('table'));
-        exportData.hastaliklarim.headers = pt.headers;
-        exportData.hastaliklarim.rows = pt.rows.map((r) => {
-          const oc = r.onclicks[0]?.onclick || '';
-          const args = [...oc.matchAll(/'([^']*)'/g)].map((m) => m[1]);
-          return {
-            tarih: r.cells[0] || args[0] || '',
-            tani: r.cells[1] || '',
-            klinik: r.cells[2] || '',
-            hekim: r.cells[3] || '',
-            detayArgs: args.slice(1, 6).filter(Boolean),
-            sysTakipNo: args[6] || ''
-          };
-        });
+        const parsedHas = P.parseHastalikRows(htmlToDoc(hasRes.text));
+        exportData.hastaliklarim.headers = parsedHas.headers;
+        exportData.hastaliklarim.rows = parsedHas.rows;
+        if (parsedHas.missingHeaders.length > 0) {
+          errors.push({ section: 'hastaliklarim', label: 'Hastalıklarım sütun uyarısı', endpoint: '/Hastalik/Index', status: hasRes.status, error: `Eşleşmeyen sütunlar: ${parsedHas.missingHeaders.join(', ')}` });
+        }
       }
+      recordSection('hastaliklarim', 'Hastalıklarım', '/Hastalik/Index', hasRes, exportData.hastaliklarim.rows.length);
 
-      await sleep(120);
+      await sleep(currentDelayMs);
       checkAbort();
 
-      const ilacRes = await postForm(
-        '/Ilac/Index',
-        { baslangicYil: wideStartYear, bitisYil: visitsEndYear },
-        xsrfToken
-      );
+      const ilacRes = await postForm('/Ilac/Index', { baslangicYil: wideStartYear, bitisYil: visitsEndYear }, xsrfToken);
       exportData.ilaclarim.status = ilacRes.status;
       if (ilacRes.ok) {
-        const idoc = htmlToDoc(ilacRes.text);
-        const pt = parseTable(idoc.querySelector('table'));
+        const pt = P.parseTable(htmlToDoc(ilacRes.text).querySelector('table'));
         exportData.ilaclarim.headers = pt.headers;
         exportData.ilaclarim.rows = pt.rows;
       }
+      recordSection('ilaclarim', 'İlaçlarım', '/Ilac/Index', ilacRes, exportData.ilaclarim.rows.length);
 
-      // Cross-check Recetelerim + Optik + Tibbi Cihaz
       const existingRecNos = new Set();
       for (const v of visits) {
         for (const r of v.detay?.receteler || []) {
           if (r.receteNo) existingRecNos.add(r.receteNo.trim());
         }
       }
-      const recCheckRes = await postForm(
-        '/Recete/Index',
-        { baslangicYil: wideStartYear, bitisYil: visitsEndYear },
-        xsrfToken
-      );
+      const recCheckRes = await postForm('/Recete/Index', { baslangicYil: wideStartYear, bitisYil: visitsEndYear }, xsrfToken);
       if (recCheckRes.ok) {
         const rdoc = htmlToDoc(recCheckRes.text);
-        const pt = parseTable(rdoc.querySelector('#tbl-recetelerim') || rdoc.querySelector('table'));
+        const pt = P.parseTable(rdoc.querySelector('#tbl-recetelerim') || rdoc.querySelector('table'));
         exportData.recetelerimOzet.totalRows = pt.rows.length;
         for (const row of pt.rows) {
           const recNo = (row.cells[1] || '').trim();
@@ -723,11 +523,11 @@
             const sysTakipNo = args[0] || '';
             let ilaclar = null;
             if (sysTakipNo) {
-              await sleep(120);
+              await sleep(currentDelayMs);
               const rr = await safeFetchText(
                 `/Ziyaret/GetReceteDetay?sysTakipNo=${encodeURIComponent(sysTakipNo)}&receteNo=${encodeURIComponent(recNo)}`
               );
-              if (rr.ok) ilaclar = { status: rr.status, ...parsePrescriptionTables(htmlToDoc(rr.text)) };
+              if (rr.ok) ilaclar = { status: rr.status, ...P.parsePrescriptionTables(htmlToDoc(rr.text)) };
             }
             exportData.recetelerimOzet.ekstraReceteler.push({
               tarih: row.cells[0] || '',
@@ -740,19 +540,18 @@
           }
         }
       }
+      recordSection('recetelerim', 'Reçetelerim', '/Recete/Index', recCheckRes, exportData.recetelerimOzet.totalRows);
 
       const optRes = await postForm('/Recete/GetOptikReceteler', { baslangicYil: wideStartYear, bitisYil: visitsEndYear }, xsrfToken);
-      if (optRes.ok) exportData.recetelerimOzet.optik = parseTable(htmlToDoc(optRes.text).querySelector('table'));
-      const tibRes = await postForm('/Recete/GetTibbiCihazReceteler', { baslangicYil: wideStartYear, bitisYil: visitsEndYear }, xsrfToken);
-      if (tibRes.ok) exportData.recetelerimOzet.tibbiCihaz = parseTable(htmlToDoc(tibRes.text).querySelector('table'));
+      if (optRes.ok) exportData.recetelerimOzet.optik = P.parseTable(htmlToDoc(optRes.text).querySelector('table'));
+      recordSection('optik', 'Optik Reçeteleri', '/Recete/GetOptikReceteler', optRes, exportData.recetelerimOzet.optik?.rows?.length || 0);
 
-      // Stage 5: Tahlillerim + COVID-19 + optional Lab PDFs
-      emitProgress(runId, {
-        stage: 'tahliller',
-        stageIndex: 5,
-        totalStages,
-        label: 'Tahlil panelleri çekiliyor...'
-      });
+      const tibRes = await postForm('/Recete/GetTibbiCihazReceteler', { baslangicYil: wideStartYear, bitisYil: visitsEndYear }, xsrfToken);
+      if (tibRes.ok) exportData.recetelerimOzet.tibbiCihaz = P.parseTable(htmlToDoc(tibRes.text).querySelector('table'));
+      recordSection('tibbi_cihaz', 'Tıbbi Cihaz Reçeteleri', '/Recete/GetTibbiCihazReceteler', tibRes, exportData.recetelerimOzet.tibbiCihaz?.rows?.length || 0);
+
+      // Stage 5: Tahlillerim + COVID-19 + Lab PDFs
+      emitProgress('tahliller', 5, 'Tahlil panelleri çekiliyor...');
       checkAbort();
 
       const tah0Res = await postForm(
@@ -760,13 +559,17 @@
         { baslangicTarihi: wideStartYear, bitisTarihi: visitsEndYear, activeTab: '0' },
         xsrfToken
       );
-      if (tah0Res.sessionExpired) return { ok: false, sessionExpired: true };
+      if (tah0Res.sessionExpired) {
+        postMsg({ type: 'EXPORT_ERROR', sessionExpired: true });
+        return;
+      }
       exportData.tahlillerim.status = tah0Res.status;
       if (tah0Res.ok) {
-        const parsedTah = parseTahlilPanels(htmlToDoc(tah0Res.text));
+        const parsedTah = P.parseTahlilPanels(htmlToDoc(tah0Res.text));
         exportData.tahlillerim.panels = parsedTah.panels;
         exportData.tahlillerim.pdfTargets = parsedTah.pdfTargets;
       }
+      recordSection('tahlillerim', 'Tahlillerim', '/Tahlil/Index', tah0Res, exportData.tahlillerim.panels.length);
 
       const tah1Res = await postForm(
         '/Tahlil/Index',
@@ -776,10 +579,11 @@
       exportData.tahlillerim.covidStatus = tah1Res.status;
       if (tah1Res.ok) {
         const cdoc = htmlToDoc(tah1Res.text);
-        exportData.tahlillerim.covid19 = parseTable(cdoc.querySelector('#tblTahlilCovid19') || cdoc.querySelector('table'));
+        exportData.tahlillerim.covid19 = P.parseTable(cdoc.querySelector('#tblTahlilCovid19') || cdoc.querySelector('table'));
       }
+      recordSection('covid19', 'COVID-19 Testleri', '/Tahlil/Index (Tab 1)', tah1Res, exportData.tahlillerim.covid19?.rows?.length || 0);
 
-      if (includeLabPdfTimes && exportData.tahlillerim.pdfTargets.length > 0) {
+      if (fetchLabPdfs && exportData.tahlillerim.pdfTargets.length > 0) {
         const targets = exportData.tahlillerim.pdfTargets;
         for (let i = 0; i < targets.length; i += 3) {
           checkAbort();
@@ -805,7 +609,8 @@
                   kurumKodu: t.kurumKodu,
                   byteLength: br.buffer.byteLength
                 };
-                emitPdfBlob(runId, {
+                postMsg({
+                  type: 'EXPORT_PDF_BLOB',
                   kind: 'lab',
                   panelIndex: t.panelIndex,
                   filename,
@@ -816,42 +621,34 @@
             })
           );
           const done = Math.min(i + 3, targets.length);
-          emitProgress(runId, {
-            stage: 'tahliller',
-            stageIndex: 5,
-            totalStages,
-            label: `Tahlil PDF saatleri alınıyor (${done}/${targets.length})...`,
-            current: done,
-            total: targets.length
-          });
-          await sleep(120);
+          emitProgress(
+            'tahliller',
+            5,
+            `Tahlil PDF saatleri alınıyor (${done}/${targets.length})...`,
+            { current: done, total: targets.length }
+          );
+          await sleep(currentDelayMs);
         }
       }
 
       // Stage 6: Radyoloji
-      emitProgress(runId, {
-        stage: 'radyoloji',
-        stageIndex: 6,
-        totalStages,
-        label: 'Radyolojik görüntüler ve raporlar çekiliyor...'
-      });
+      emitProgress('radyoloji', 6, 'Radyolojik görüntüler ve raporlar çekiliyor...');
       checkAbort();
 
-      const radRes = await postForm(
-        '/RadyolojikGoruntu',
-        { startYear: wideStartYear, endYear: visitsEndYear },
-        xsrfToken
-      );
-      if (radRes.sessionExpired) return { ok: false, sessionExpired: true };
+      const radRes = await postForm('/RadyolojikGoruntu', { startYear: wideStartYear, endYear: visitsEndYear }, xsrfToken);
+      if (radRes.sessionExpired) {
+        postMsg({ type: 'EXPORT_ERROR', sessionExpired: true });
+        return;
+      }
       if (radRes.ok) {
         const radDoc = htmlToDoc(radRes.text);
         const cards = Array.from(radDoc.querySelectorAll('.radyolojiCardListe'));
         for (let idx = 0; idx < cards.length; idx++) {
           checkAbort();
           const c = cards[idx];
-          const hastane = cleanText(c.querySelector('.RhastaneAdi'));
-          const tarih = cleanText(c.querySelector('.Rtarih span'));
-          const aciklama = cleanText(c.querySelector('.Raciklama')).replace(/^Açıklama\s*:\s*/i, '').trim();
+          const hastane = P.cleanText(c.querySelector('.RhastaneAdi'));
+          const tarih = P.cleanText(c.querySelector('.Rtarih span'));
+          const aciklama = P.cleanText(c.querySelector('.Raciklama')).replace(/^Açıklama\s*:\s*/i, '').trim();
           const onclicks = Array.from(c.querySelectorAll('[onclick]')).map((el) => el.getAttribute('onclick') || '');
           let orderId = null;
           let accession = null;
@@ -864,21 +661,14 @@
           let rapor = '';
           let raporHtml = '';
           let raporStatus = null;
+          let pdfMeta = null;
           if (orderId) {
-            await sleep(120);
+            await sleep(currentDelayMs);
             let rr = await safeFetchText(`/RadyolojikGoruntu/GetRaporByOrder?orderId=${orderId}`, {
-              headers: {
-                'X-Requested-With': 'XMLHttpRequest',
-                'XSRF-TOKEN': xsrfToken,
-                'RequestVerificationToken': xsrfToken
-              }
+              headers: { 'X-Requested-With': 'XMLHttpRequest', 'XSRF-TOKEN': xsrfToken, 'RequestVerificationToken': xsrfToken }
             });
             if (!rr.ok) {
-              rr = await postForm(
-                '/RadyolojikGoruntu/GetRaporByOrder',
-                { orderId: decodeURIComponent(orderId) },
-                xsrfToken
-              );
+              rr = await postForm('/RadyolojikGoruntu/GetRaporByOrder', { orderId: decodeURIComponent(orderId) }, xsrfToken);
             }
             raporStatus = rr.status;
             if (rr.ok) {
@@ -887,7 +677,7 @@
                 raporHtml = j.rapor || '';
                 if (raporHtml) {
                   const d = htmlToDoc(raporHtml);
-                  rapor = d.body?.innerText ? d.body.innerText.trim() : cleanText(d.body);
+                  rapor = d.body?.innerText ? d.body.innerText.trim() : P.cleanText(d.body);
                 }
               } catch {
                 raporHtml = rr.text;
@@ -895,13 +685,9 @@
               }
             }
 
-            if (includeReportPdfs) {
+            if (fetchReportPdfs) {
               await sleep(100);
-              let pr = await postForm(
-                '/RadyolojikGoruntu/GetRaporPdfByOrder',
-                { orderId: decodeURIComponent(orderId) },
-                xsrfToken
-              );
+              let pr = await postForm('/RadyolojikGoruntu/GetRaporPdfByOrder', { orderId: decodeURIComponent(orderId) }, xsrfToken);
               let b64 = null;
               try { b64 = JSON.parse(pr.text).rapor || null; } catch {}
               if (!b64) {
@@ -915,73 +701,62 @@
                 const slug = aciklama.replace(/[çğıöşüÇĞİÖŞÜ]/g, (ch) => trMap[ch] || ch).replace(/[^A-Za-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 60) || 'radyoloji';
                 const filename = `${iso}_${idx + 1}_${slug}.pdf`;
                 const radIdx = exportData.radyoloji.length;
-                emitPdfBlob(runId, {
+                pdfMeta = { filename, relativePath: `radyoloji_pdf/${filename}` };
+                postMsg({
+                  type: 'EXPORT_PDF_BLOB',
                   kind: 'radyoloji',
                   radIndex: radIdx,
                   filename,
-                  relativePath: `radyoloji_pdf/${filename}`,
+                  relativePath: pdfMeta.relativePath,
                   base64: b64
                 });
-                exportData.radyoloji.push({
-                  hastane,
-                  tarih,
-                  aciklama,
-                  orderId,
-                  accession,
-                  raporStatus,
-                  rapor,
-                  raporHtml,
-                  pdf: { filename, relativePath: `radyoloji_pdf/${filename}` }
-                });
-                continue;
               }
             }
           }
-          exportData.radyoloji.push({ hastane, tarih, aciklama, orderId, accession, raporStatus, rapor, raporHtml });
+          exportData.radyoloji.push({
+            hastane,
+            tarih,
+            aciklama,
+            orderId,
+            accession,
+            raporStatus,
+            rapor,
+            raporHtml,
+            ...(pdfMeta ? { pdf: pdfMeta } : {})
+          });
         }
       }
+      recordSection('radyoloji', 'Radyoloji', '/RadyolojikGoruntu', radRes, exportData.radyoloji.length);
 
       // Stage 7: Raporlarim & Official PDFs
-      emitProgress(runId, {
-        stage: 'raporlar',
-        stageIndex: 7,
-        totalStages,
-        label: 'Sağlık raporları ve resmi PDF dosyaları çekiliyor...'
-      });
+      emitProgress('raporlar', 7, 'Sağlık raporları ve resmi PDF dosyaları çekiliyor...');
       checkAbort();
 
       const rapRes = await postForm('/Rapor/Index', { startYear: wideStartYear, endYear: visitsEndYear }, xsrfToken);
-      if (rapRes.sessionExpired) return { ok: false, sessionExpired: true };
+      if (rapRes.sessionExpired) {
+        postMsg({ type: 'EXPORT_ERROR', sessionExpired: true });
+        return;
+      }
       exportData.raporlar.status = rapRes.status;
       if (rapRes.ok) {
-        const rapDoc = htmlToDoc(rapRes.text);
-        const t1 = parseTable(rapDoc.querySelector('#tblRaporlarim'));
-        exportData.raporlar.headers = t1.headers;
-        exportData.raporlar.raporlar = t1.rows.map((r) => {
-          const pdfOc = r.onclicks.find((o) => o.onclick.includes('RaporPdf'));
-          const m = pdfOc ? pdfOc.onclick.match(/RaporPdf\('([^']+)'\)/) : null;
-          return {
-            tarih: r.cells[0] || '',
-            raporNo: r.cells[1] || '',
-            raporTakipNo: r.cells[2] || '',
-            raporTuru: r.cells[3] || '',
-            baslangicTarihi: r.cells[4] || '',
-            bitisTarihi: r.cells[5] || '',
-            tani: r.cells[6] || '',
-            pdfTakipNo: m ? m[1] : null
-          };
-        });
-        exportData.raporlar.basvurular = parseTable(rapDoc.querySelector('#tblRaporBasvurularim')).rows;
+        const parsedRap = P.parseRaporRows(htmlToDoc(rapRes.text));
+        exportData.raporlar.headers = parsedRap.headers;
+        exportData.raporlar.raporlar = parsedRap.raporlar;
+        exportData.raporlar.basvurular = parsedRap.basvurular;
+        if (parsedRap.missingHeaders.length > 0) {
+          errors.push({ section: 'raporlar', label: 'Raporlarım sütun uyarısı', endpoint: '/Rapor/Index', status: rapRes.status, error: `Eşleşmeyen sütunlar: ${parsedRap.missingHeaders.join(', ')}` });
+        }
       }
+      recordSection('raporlar', 'Sağlık Raporları', '/Rapor/Index', rapRes, exportData.raporlar.raporlar.length);
 
-      if (includeReportPdfs) {
+      if (fetchReportPdfs) {
         const pdfTargets = exportData.raporlar.raporlar
           .map((rp, idx) => ({ rp, idx }))
           .filter((x) => x.rp.pdfTakipNo);
         for (let i = 0; i < pdfTargets.length; i++) {
           checkAbort();
           const { rp, idx } = pdfTargets[i];
-          await sleep(120);
+          await sleep(currentDelayMs);
           const br = await safeFetchBuffer(`/Rapor/RaporPdf?raporTakipNo=${encodeURIComponent(rp.pdfTakipNo)}`);
           if (br.ok && br.buffer && hasPdfMagic(br.buffer)) {
             const dtMatch = (rp.tarih || '').match(/(\d{2})\.(\d{2})\.(\d{4})/);
@@ -993,32 +768,28 @@
               byteLength: br.buffer.byteLength,
               status: br.status
             };
-            emitPdfBlob(runId, {
+            postMsg({
+              type: 'EXPORT_PDF_BLOB',
               kind: 'rapor',
               raporIndex: idx,
               filename,
-              relativePath: `raporlar_pdf/${filename}`,
+              relativePath: rp.pdf.relativePath,
               base64: arrayBufferToBase64(br.buffer)
             });
+          } else {
+            errors.push({ section: 'rapor_pdf', label: `Rapor PDF (${rp.raporNo})`, endpoint: '/Rapor/RaporPdf', status: br.status, error: br.error || `HTTP ${br.status}` });
           }
-          emitProgress(runId, {
-            stage: 'raporlar',
-            stageIndex: 7,
-            totalStages,
-            label: `Resmi rapor PDF'leri indiriliyor (${i + 1}/${pdfTargets.length})...`,
-            current: i + 1,
-            total: pdfTargets.length
-          });
+          emitProgress(
+            'raporlar',
+            7,
+            `Resmi rapor PDF'leri indiriliyor (${i + 1}/${pdfTargets.length})...`,
+            { current: i + 1, total: pdfTargets.length }
+          );
         }
       }
 
       // Stage 8: Asi, Kronik Takip, Randevular, Malzemeler & Other sections
-      emitProgress(runId, {
-        stage: 'ek_bolumler',
-        stageIndex: 8,
-        totalStages,
-        label: 'Aşı, kronik takip, randevu ve tıbbi malzemeler çekiliyor...'
-      });
+      emitProgress('ek_bolumler', 8, 'Aşı, kronik takip, randevu ve tıbbi malzemeler çekiliyor...');
       checkAbort();
 
       const asiRes = await safeFetchText('/Home/AsiTakvimi');
@@ -1027,27 +798,28 @@
         const main = d.querySelector('main') || d.body;
         exportData.asiTakvimi = {
           status: asiRes.status,
-          tables: Array.from(main.querySelectorAll('table')).map((t) => ({ id: t.id || '', ...parseTable(t) }))
+          tables: Array.from(main.querySelectorAll('table')).map((t) => ({ id: t.id || '', ...P.parseTable(t) }))
         };
       }
+      recordSection('asi', 'Aşı Takvimi', '/Home/AsiTakvimi', asiRes, exportData.asiTakvimi.tables.reduce((a, t) => a + t.rows.length, 0));
 
       const htPage = await safeFetchText('/Home/HastalikTakip');
       if (htPage.ok) {
         const htd = htmlToDoc(htPage.text);
-        const tbl = parseTable(htd.querySelector('#tblHastalikTakip') || htd.querySelector('table'));
+        const tbl = P.parseTable(htd.querySelector('#tblHastalikTakip') || htd.querySelector('table'));
         exportData.hastalikTakip = { status: htPage.status, tables: [{ id: 'tblHastalikTakip', ...tbl }] };
         for (const r of tbl.rows) {
           const oc = r.onclicks[0]?.onclick || '';
           const m = oc.match(/HastalikTakipDetayGoster\('([^']+)'\)/);
           if (!m) continue;
-          await sleep(120);
+          await sleep(currentDelayMs);
           const det = await postForm(`/HastalikTakip/detay?systakipNo=${encodeURIComponent(m[1])}`, {}, xsrfToken);
           let parsedDet = null;
           if (det.ok) {
             const dd = htmlToDoc(det.text);
             parsedDet = {
-              tables: Array.from(dd.querySelectorAll('table')).map((t) => parseTable(t)),
-              text: cleanText(dd.body)
+              tables: Array.from(dd.querySelectorAll('table')).map((t) => P.parseTable(t)),
+              text: P.cleanText(dd.body)
             };
           }
           exportData.hastalikTakipDetay.push({
@@ -1061,25 +833,27 @@
           });
         }
       }
+      recordSection('hastalik_takip', 'Kronik Takip', '/Home/HastalikTakip', htPage, exportData.hastalikTakipDetay.length);
 
       const ranRes = await safeFetchText('/Home/Randevularim');
       if (ranRes.ok) {
         const rd = htmlToDoc(ranRes.text);
         exportData.randevularim = {
           status: ranRes.status,
-          tables: Array.from(rd.querySelectorAll('main table')).map((t) => ({ id: t.id || '', ...parseTable(t) }))
+          tables: Array.from(rd.querySelectorAll('main table')).map((t) => ({ id: t.id || '', ...P.parseTable(t) }))
         };
       }
+      recordSection('randevularim', 'Randevularım', '/Home/Randevularim', ranRes, exportData.randevularim.tables.reduce((a, t) => a + t.rows.length, 0));
 
       const malzRes = await safeFetchText('/Home/MalzemeveCihazlarim');
       if (malzRes.ok) {
         const md = htmlToDoc(malzRes.text);
         exportData.malzemeVeCihazlarim.status = malzRes.status;
         for (const tbl of md.querySelectorAll('main table')) {
-          exportData.malzemeVeCihazlarim.tables[tbl.id || 'malzeme'] = parseTable(tbl);
+          exportData.malzemeVeCihazlarim.tables[tbl.id || 'malzeme'] = P.parseTable(tbl);
         }
         for (const tr of md.querySelectorAll('main table tbody tr')) {
-          const tds = Array.from(tr.querySelectorAll('td')).map((td) => cleanText(td));
+          const tds = Array.from(tr.querySelectorAll('td')).map((td) => P.cleanText(td));
           if (tds.length === 0 || (tds.length === 1 && /kayıt|bulunmamaktadır/i.test(tds[0]))) continue;
           const oc = tr.querySelector('[onclick]')?.getAttribute('onclick') || '';
           const um = oc.match(/url:\s*'([^']+)'/);
@@ -1115,85 +889,108 @@
           }
         }
       }
+      recordSection('malzemeler', 'Tıbbi Malzemeler', '/Home/MalzemeveCihazlarim', malzRes, exportData.malzemeDetaylari.length);
 
-      // Secondary sections (Alerjilerim, Epikrizlerim, Patolojilerim, Taramalar, Sigortalarim, AcilDurumNotlarim, Dokumanlarim)
       const alerjiRes = await safeFetchText('/Home/Alerjilerim');
       if (alerjiRes.ok) {
         const d = htmlToDoc(alerjiRes.text);
         exportData.alerjilerim = {
           status: alerjiRes.status,
-          tables: Array.from((d.querySelector('main') || d.body).querySelectorAll('table')).map((t) => ({ id: t.id || '', ...parseTable(t) }))
+          tables: Array.from((d.querySelector('main') || d.body).querySelectorAll('table')).map((t) => ({ id: t.id || '', ...P.parseTable(t) }))
         };
       }
+      recordSection('alerjilerim', 'Alerjilerim', '/Home/Alerjilerim', alerjiRes, exportData.alerjilerim.tables.reduce((a, t) => a + t.rows.length, 0));
 
       const epiRes = await postForm('/Epikriz/Index', { baslangicYil: wideStartYear, bitisYil: visitsEndYear }, xsrfToken);
       if (epiRes.ok) {
         const d = htmlToDoc(epiRes.text);
-        const pt = parseTable(d.querySelector('#tblEpikriz') || d.querySelector('table'));
-        exportData.epikrizler = { status: epiRes.status, ...pt };
+        exportData.epikrizler = { status: epiRes.status, ...P.parseTable(d.querySelector('#tblEpikriz') || d.querySelector('table')) };
       }
+      recordSection('epikrizler', 'Epikrizlerim', '/Epikriz/Index', epiRes, exportData.epikrizler.rows.length);
 
       const patRes = await postForm('/Patoloji/Index', { baslangicYili: wideStartYear, bitisYili: visitsEndYear }, xsrfToken);
       if (patRes.ok) {
         const d = htmlToDoc(patRes.text);
-        const pt = parseTable(d.querySelector('#tblPatoloji') || d.querySelector('table'));
-        exportData.patolojiler = { status: patRes.status, ...pt };
+        exportData.patolojiler = { status: patRes.status, ...P.parseTable(d.querySelector('#tblPatoloji') || d.querySelector('table')) };
       }
+      recordSection('patolojiler', 'Patolojilerim', '/Patoloji/Index', patRes, exportData.patolojiler.rows.length);
 
       const tarRes = await postForm('/Tarama/Index', { baslangicYili: wideStartYear, bitisYili: visitsEndYear }, xsrfToken);
       if (tarRes.ok) {
         const d = htmlToDoc(tarRes.text);
         exportData.taramalar = {
           status: tarRes.status,
-          tables: Array.from(d.querySelectorAll('table')).map((t) => ({ id: t.id || '', ...parseTable(t) }))
+          tables: Array.from(d.querySelectorAll('table')).map((t) => ({ id: t.id || '', ...P.parseTable(t) }))
         };
       }
+      recordSection('taramalar', 'Kanser Taramaları', '/Tarama/Index', tarRes, exportData.taramalar.tables.reduce((a, t) => a + t.rows.length, 0));
 
       const sigRes = await safeFetchText('/Home/Sigortalarim');
       if (sigRes.ok) {
         const d = htmlToDoc(sigRes.text);
-        const pt = parseTable(d.querySelector('#tblSigorta') || d.querySelector('main table'));
+        const pt = P.parseTable(d.querySelector('#tblSigorta') || d.querySelector('main table'));
         exportData.sigortalarim = { status: sigRes.status, count: pt.rows.length, ...pt };
       }
+      recordSection('sigortalarim', 'Sigortalarım', '/Home/Sigortalarim', sigRes, exportData.sigortalarim.rows.length);
 
       const acilRes = await safeFetchText('/Home/AcilDurumNotlarim');
       if (acilRes.ok) {
         const d = htmlToDoc(acilRes.text);
         const main = d.querySelector('main') || d.body;
-        const tables = Array.from(main.querySelectorAll('table')).map((t) => ({ id: t.id || '', ...parseTable(t) }));
+        const tables = Array.from(main.querySelectorAll('table')).map((t) => ({ id: t.id || '', ...P.parseTable(t) }));
         const notes = Array.from(main.querySelectorAll('.card-body, .note, textarea'))
-          .map((el) => cleanText(el))
+          .map((el) => P.cleanText(el))
           .filter((t) => t && !/kayıtlı bilginiz bulunmamaktadır/i.test(t));
         exportData.acilDurumNotlarim = { status: acilRes.status, tables, text: notes.join(' | ').slice(0, 4000) };
       }
+      recordSection('acil_notlar', 'Acil Durum Notlarım', '/Home/AcilDurumNotlarim', acilRes, exportData.acilDurumNotlarim.tables.reduce((a, t) => a + t.rows.length, 0));
 
       const dokRes = await safeFetchText('/Home/Dokumanlarim');
       if (dokRes.ok) {
         const d = htmlToDoc(dokRes.text);
         exportData.dokumanlarim = {
           status: dokRes.status,
-          tables: Array.from((d.querySelector('main') || d.body).querySelectorAll('table')).map((t) => ({ id: t.id || '', ...parseTable(t) }))
+          tables: Array.from((d.querySelector('main') || d.body).querySelectorAll('table')).map((t) => ({ id: t.id || '', ...P.parseTable(t) }))
         };
       }
+      recordSection('dokumanlarim', 'Dokümanlarım', '/Home/Dokumanlarim', dokRes, exportData.dokumanlarim.tables.reduce((a, t) => a + t.rows.length, 0));
 
-      emitProgress(runId, {
-        stage: 'tamamlandi_fetch',
-        stageIndex: 9,
-        totalStages,
-        label: 'Veri toplama tamamlandı, PDF ve Markdown derleniyor...'
-      });
-
-      return { ok: true, runId, data: exportData };
+      postMsg({ type: 'EXPORT_COMPLETE', data: exportData });
     } catch (err) {
       if (err?.isCancelled) {
-        return { ok: false, cancelled: true };
+        postMsg({ type: 'EXPORT_ERROR', cancelled: true });
+      } else if (err?.sessionExpired) {
+        postMsg({ type: 'EXPORT_ERROR', sessionExpired: true });
+      } else {
+        postMsg({ type: 'EXPORT_ERROR', error: err?.message || String(err) });
       }
-      if (err?.sessionExpired) {
-        return { ok: false, sessionExpired: true };
-      }
-      return { ok: false, error: err?.message || String(err) };
+    } finally {
+      clearInterval(heartbeatTimer);
     }
   }
+
+  chrome.runtime.onConnect.addListener((port) => {
+    if (port.name !== 'enabiz-export') return;
+    let portRunId = null;
+
+    port.onMessage.addListener((msg) => {
+      if (!msg || typeof msg !== 'object') return;
+      if (msg.type === 'START_EXPORT') {
+        portRunId = msg.runId || Date.now();
+        runExportOnPort(port, portRunId, msg.options || {});
+      } else if (msg.type === 'CANCEL_EXPORT') {
+        if (!msg.runId || msg.runId === activeRunId) {
+          cancelRequested = true;
+        }
+      }
+    });
+
+    port.onDisconnect.addListener(() => {
+      if (portRunId && portRunId === activeRunId) {
+        cancelRequested = true;
+      }
+    });
+  });
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (!msg || typeof msg !== 'object') return false;
@@ -1220,12 +1017,6 @@
       cancelRequested = true;
       sendResponse({ ok: true });
       return false;
-    }
-    if (msg.type === 'START_EXPORT') {
-      runExport(msg.options || {})
-        .then((res) => sendResponse(res))
-        .catch((err) => sendResponse({ ok: false, error: String(err) }));
-      return true; // keep channel open for async response
     }
     return false;
   });

@@ -40,6 +40,11 @@ export function parseTrFloat(val) {
   return Number.isFinite(num) ? num : null;
 }
 
+/**
+ * Classify numeric lab results against standard reference strings (`lo - hi`, `<hi`, `<=hi`, `>lo`, `>=lo`).
+ * Note: Parenthesized or operator-prefixed result values (e.g. `(4-10)` or `>1000`) cannot be parsed as a
+ * single float and safely fall back to the portal's `apiFlagged` indicator (`OUT`).
+ */
 export function classifyLabValue(sonuc, referans, apiFlagged = false) {
   const val = parseTrFloat(sonuc);
   const ref = cleanStr(referans);
@@ -82,14 +87,36 @@ export function statusLabel(flag) {
 }
 
 export function dateSortKey(dateStr) {
-  const m = (dateStr || '').match(/(\d{2})[-.](\d{2})[-.](\d{4})(?:\s+(\d{2}):(\d{2}))?/);
-  if (!m) return 0;
-  const yr = Number(m[3]);
-  const mo = Number(m[2]);
-  const dy = Number(m[1]);
-  const hr = Number(m[4] || 0);
-  const mn = Number(m[5] || 0);
-  return yr * 1e8 + mo * 1e6 + dy * 1e4 + hr * 100 + mn;
+  const s = dateStr || '';
+  const mTr = s.match(/(\d{2})[-.](\d{2})[-.](\d{4})(?:[T\s]+(\d{2}):(\d{2}))?/);
+  if (mTr) {
+    return (
+      Number(mTr[3]) * 1e8 +
+      Number(mTr[2]) * 1e6 +
+      Number(mTr[1]) * 1e4 +
+      Number(mTr[4] || 0) * 100 +
+      Number(mTr[5] || 0)
+    );
+  }
+  const mIso = s.match(/(\d{4})-(\d{2})-(\d{2})(?:[T\s]+(\d{2}):(\d{2}))?/);
+  if (mIso) {
+    return (
+      Number(mIso[1]) * 1e8 +
+      Number(mIso[2]) * 1e6 +
+      Number(mIso[3]) * 1e4 +
+      Number(mIso[4] || 0) * 100 +
+      Number(mIso[5] || 0)
+    );
+  }
+  return 0;
+}
+
+export function safeCodeFence(text, lang = 'text') {
+  const body = String(text || '');
+  const matches = body.match(/`+/g) || [];
+  const maxRun = matches.reduce((mx, m) => Math.max(mx, m.length), 0);
+  const fence = '`'.repeat(Math.max(3, maxRun + 1));
+  return `${fence}${lang}\n${body}\n${fence}`;
 }
 
 export function cleanRadiologyBody(raporHtml, pdfText) {
@@ -234,19 +261,18 @@ export function parseChronicDetail(ht) {
 export function formatHastalikRow(row) {
   if ('tarih' in row) {
     let tani = cleanStr(row.tani);
-    const args = (row.detayArgs || []).map((x) => cleanStr(x)).filter(Boolean);
+    const klinik = cleanStr(row.klinik);
+    const hekim = cleanStr(row.hekim);
+    const normExisting = [tani, klinik, hekim].join(' ').toLocaleLowerCase('tr-TR');
+    const args = (row.detayArgs || [])
+      .map((x) => cleanStr(x))
+      .filter((x) => x && !normExisting.includes(x.toLocaleLowerCase('tr-TR')));
     if (args.length > 0) {
       const combined = args.join(', ');
       if (!tani) tani = combined;
-      else if (!tani.includes(combined)) tani = `${tani} (${combined})`;
+      else tani = `${tani} (${combined})`;
     }
-    return [
-      cleanStr(row.tarih),
-      tani,
-      cleanStr(row.klinik),
-      cleanStr(row.hekim),
-      cleanStr(row.sysTakipNo)
-    ];
+    return [cleanStr(row.tarih), tani, klinik, hekim, cleanStr(row.sysTakipNo)];
   }
   const c = row.cells || [];
   return [cleanStr(c[0] || ''), cleanStr(c[1] || ''), cleanStr(c[2] || ''), cleanStr(c[3] || ''), ''];
@@ -420,9 +446,7 @@ function buildRaporlar(data) {
       const cleanedBody = cleanOfficialReportText(rp.pdf.extractedText, { patientName });
       if (cleanedBody) {
         lines.push('');
-        lines.push('```text');
-        lines.push(cleanedBody);
-        lines.push('```');
+        lines.push(safeCodeFence(cleanedBody, 'text'));
       }
       lines.push('');
     }
@@ -503,6 +527,26 @@ function buildIlaclar(data) {
     lines.push('');
   }
 
+  const ilacHeaders = (data.ilaclarim?.headers || []).map((h) => cleanStr(h).toLocaleLowerCase('tr-TR'));
+  const findCol = (patterns, fallback) => {
+    if (!ilacHeaders.length) return fallback;
+    const idx = ilacHeaders.findIndex((h) => patterns.some((p) => h.includes(p)));
+    return idx >= 0 ? idx : fallback;
+  };
+  const colIdx = {
+    tarih: findCol(['tarih'], 0),
+    barkod: findCol(['barkod'], 1),
+    receteNo: findCol(['reçete no', 'recete no', 'reçete'], 2),
+    ilacAdi: findCol(['ilaç adı', 'ilac adi', 'ilaç'], 3),
+    doz: findCol(['doz'], 4),
+    periyot: findCol(['periyot'], 5),
+    kullanim: findCol(['kullanım şekli', 'kullanim sekli', 'kullanım'], 6),
+    kullanimSayisi: findCol(['kullanım sayısı', 'kullanim sayisi', 'sayısı'], 7),
+    kutu: findCol(['kutu', 'adet'], 8),
+    hastane: findCol(['hastane', 'kurum'], 9),
+    klinik: findCol(['klinik', 'branş', 'brans'], 10)
+  };
+
   lines.push(
     `## 2. \`İlaçlarım\` Tam Kronolojik Liste (${ilacRows.length} Satır)`,
     '',
@@ -510,10 +554,10 @@ function buildIlaclar(data) {
     '|---|---|---|---|---|---|---|---|---|'
   );
   for (const row of ilacRows) {
-    const c = [...(row.cells || [])];
-    while (c.length < 11) c.push('');
+    const c = row.cells || [];
+    const get = (i) => (i >= 0 && i < c.length ? c[i] : '');
     lines.push(
-      `| ${mdEsc(c[0])} | \`${mdEsc(c[2])}\` | ${mdEsc(c[3])} | \`${mdEsc(c[1])}\` | ${mdEsc(c[4])} / ${mdEsc(c[5])} | ${mdEsc(c[6])} (${mdEsc(c[7])}x) | ${mdEsc(c[8])} | ${mdEsc(c[9])} | ${mdEsc(c[10])} |`
+      `| ${mdEsc(get(colIdx.tarih))} | \`${mdEsc(get(colIdx.receteNo))}\` | ${mdEsc(get(colIdx.ilacAdi))} | \`${mdEsc(get(colIdx.barkod))}\` | ${mdEsc(get(colIdx.doz))} / ${mdEsc(get(colIdx.periyot))} | ${mdEsc(get(colIdx.kullanim))} (${mdEsc(get(colIdx.kullanimSayisi))}x) | ${mdEsc(get(colIdx.kutu))} | ${mdEsc(get(colIdx.hastane))} | ${mdEsc(get(colIdx.klinik))} |`
     );
   }
   lines.push('');
@@ -797,9 +841,18 @@ function buildReadme(data, stats) {
   const prof = data.profil || {};
   const meta = data.metadata || {};
   const name = cleanStr(prof.adSoyad || meta.patientName || 'Hasta');
-  const lines = [
-    `# e-Nabız Tam Sağlık Arşivi — ${name}`,
-    '',
+  const lines = [`# e-Nabız Tam Sağlık Arşivi — ${name}`, ''];
+
+  if (stats.warnings?.length > 0) {
+    lines.push('> [!WARNING]');
+    lines.push('> **Kısmi Arşiv Uyarısı:** Bu dışa aktarım sırasında bazı bölümler veya ziyaret detayları alınamadı:');
+    for (const w of stats.warnings) {
+      lines.push(`> - ${w}`);
+    }
+    lines.push('');
+  }
+
+  lines.push(
     `- **Kapsam:** ${stats.oldestVisit} – ${stats.newestVisit} (\`${stats.totalVisits}\` ziyaret, \`${stats.totalIslemRows}\` tıbbi işlem)`,
     `- **Dışa Aktarım:** ${cleanStr(meta.exportedAt)}`,
     '- **Format Notu:** Tüm tıbbi veriler, resmi PDF içerikleri ve kronolojik ziyaret/işlem kayıtları korunmuş; yasal uyarılar, e-imza doğrulama altbilgileri, form doldurma yönergeleri ve tekrarlayan kimlik üstbilgileri çıkarılmıştır.',
@@ -822,17 +875,32 @@ function buildReadme(data, stats) {
     `| [01-tanilar.md](01-tanilar.md) | ICD-10 tanı sıklığı + Hastalıklarım tam listesi | ${stats.uniqueDiagnosesCount} benzersiz tanı · ${stats.hastaliklarimCount} hastalık satırı |`,
     `| [02-tahliller.md](02-tahliller.md) | Referans dışı tahliller + tüm ${stats.panelCount} tahlil paneli | ${stats.labRowsCount} parametre (${stats.oorCount} referans dışı) |`,
     `| [03-radyoloji.md](03-radyoloji.md) | Radyolojik incelemeler ve temizlenmiş tam rapor metinleri | ${stats.radCount} inceleme (${stats.radReportCount} yazılı rapor) |`,
-    `| [04-raporlar.md](04-raporlar.md) | Sağlık raporları listesi + ${stats.raporPdfCount} resmi PDF'in temizlenmiş klinik özeti | ${stats.raporCount} rapor (${stats.raporPdfCount} tam içerik) |`,
+    `| [04-raporlar.md](04-raporlar.md) | Sağlık raporları listesi + ${stats.raporPdfExtractedCount} resmi PDF'in temizlenmiş klinik özeti | ${stats.raporCount} rapor (${stats.raporPdfExtractedCount} tam içerik) |`,
     `| [05-ilaclar-ve-receteler.md](05-ilaclar-ve-receteler.md) | Reçete detayları (yazılan/alınan) + İlaçlarım geçmişi | ${stats.receteCount} reçete · ${stats.ilaclarimCount} ilaç satırı |`,
     `| [06-asi-takip-malzeme.md](06-asi-takip-malzeme.md) | Aşı takvimi, kronik tarama bulguları, randevu, tıbbi malzemeler | ${stats.asiCount} aşı · ${stats.takipCount} takip · ${stats.malzemeCount} malzeme |`,
     `| \`ziyaretler/\` | Yıllara göre tüm ziyaret ve işlem detayları | ${stats.totalVisits} ziyaret · ${stats.totalIslemRows} işlem |`,
     '',
     '### Yıllara Göre Ziyaret Dosyaları',
     ''
-  ];
+  );
   for (const yf of stats.yearFiles) {
     lines.push(`- [${yf.label}](ziyaretler/${yf.fname}) — ${yf.visitCount} ziyaret, ${yf.procCount} işlem`);
   }
+
+  if (data.sectionStatuses?.length > 0) {
+    lines.push(
+      '',
+      '## Dışa Aktarım Doğrulama Özeti',
+      '',
+      '| Bölüm | HTTP Durumu | Kayıt Sayısı | Sonuç |',
+      '|---|---:|---:|---|'
+    );
+    for (const s of data.sectionStatuses) {
+      const badge = s.ok ? 'Tamam' : `Hata (${mdEsc(s.error)})`;
+      lines.push(`| ${mdEsc(s.label)} | \`${s.status}\` | ${s.recordCount} | ${badge} |`);
+    }
+  }
+
   lines.push('');
   return lines.join('\n');
 }
@@ -950,10 +1018,28 @@ export function buildMarkdownArchive(rawData, opts = {}) {
   const totalVisitRecs = visits.reduce((sum, v) => sum + ((v.detay?.receteler || []).length), 0);
   const extraRecsCount = (data.recetelerimOzet?.ekstraReceteler || []).length;
 
+  const sortedVisitDates = visits
+    .map((v) => cleanStr(v.tarih))
+    .filter(Boolean)
+    .sort((a, b) => dateSortKey(a) - dateSortKey(b));
+
+  const failedSections = (data.sectionStatuses || []).filter((s) => !s.ok);
+  const failedVisitDetails = visits.filter((v) => v.detayUrl && v.detayStatus && v.detayStatus !== 200);
+  const warnings = [];
+  if (visits.length === 0) {
+    warnings.push('Hiç ziyaret kaydı bulunamadı (`0` ziyaret). Oturum veya seçili yıl aralığını kontrol edin.');
+  }
+  for (const fs of failedSections) {
+    warnings.push(`${fs.label} (${fs.endpoint}) alınamadı: ${fs.error}`);
+  }
+  if (failedVisitDetails.length > 0) {
+    warnings.push(`${failedVisitDetails.length} ziyaretin detayı çekilemedi.`);
+  }
+
   const stats = {
     totalVisits: visits.length,
-    newestVisit: visits[0]?.tarih || '',
-    oldestVisit: visits[visits.length - 1]?.tarih || '',
+    newestVisit: sortedVisitDates[sortedVisitDates.length - 1] || '',
+    oldestVisit: sortedVisitDates[0] || '',
     totalIslemRows: visits.reduce((sum, v) => sum + ((v.detay?.islemler || []).length), 0),
     uniqueDiagnosesCount: diagnoses.length,
     diagnoses,
@@ -967,7 +1053,8 @@ export function buildMarkdownArchive(rawData, opts = {}) {
     radCount: (data.radyoloji || []).length,
     radReportCount,
     raporCount: raporlar.length,
-    raporPdfCount: raporlar.filter((r) => r.pdf?.extractedText || r.pdf).length,
+    raporPdfCount: raporlar.filter((r) => Boolean(r.pdf)).length,
+    raporPdfExtractedCount: raporlar.filter((r) => Boolean(r.pdf?.extractedText)).length,
     receteCount: totalVisitRecs + extraRecsCount,
     ilaclarimCount: (data.ilaclarim?.rows || []).length,
     asiCount: (data.asiTakvimi?.tables || []).reduce((sum, t) => sum + (t.rows || []).length, 0),
@@ -977,7 +1064,10 @@ export function buildMarkdownArchive(rawData, opts = {}) {
     malzemeCount:
       (data.malzemeDetaylari || []).length ||
       Object.values(data.malzemeVeCihazlarim?.tables || {}).reduce((sum, t) => sum + (t.rows || []).length, 0),
-    yearFiles
+    yearFiles,
+    failedSections,
+    failedVisitDetailsCount: failedVisitDetails.length,
+    warnings
   };
 
   const files = new Map();

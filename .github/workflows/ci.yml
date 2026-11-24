@@ -39,12 +39,14 @@ jobs:
       - name: Syntax check JS/MJS modules
         run: |
           node --check src/background.js
+          node --check src/lib/dom-parsers.js
           node --check src/content.js
           node --check src/sidepanel.js
           node --check src/lib/pdf-extractor.js
           node --check src/lib/markdown-builder.js
           node --check src/lib/zip.js
           node --check tests/verify-builder.mjs
+          node --check tests/verify-parsers.mjs
 
-      - name: Run synthetic Markdown & ZIP verification suite
-        run: node tests/verify-builder.mjs
+      - name: Run synthetic Markdown, ZIP & DOM parser verification suites
+        run: npm test
