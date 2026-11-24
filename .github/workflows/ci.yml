@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Validate manifest.json & asset paths
+        run: |
+          node -e "
+            const fs = require('fs');
+            const m = JSON.parse(fs.readFileSync('manifest.json', 'utf8'));
+            const refs = [
+              ...Object.values(m.icons || {}),
+              ...Object.values(m.action?.default_icon || {}),
+              m.side_panel?.default_path,
+              m.background?.service_worker,
+              ...(m.content_scripts || []).flatMap(cs => cs.js || [])
+            ].filter(Boolean);
+            for (const r of refs) {
+              if (!fs.existsSync(r)) throw new Error('Missing manifest reference: ' + r);
+            }
+            console.log('Manifest OK, verified', refs.length, 'references');
+          "
+
+      - name: Syntax check JS/MJS modules
+        run: |
+          node --check src/background.js
+          node --check src/content.js
+          node --check src/sidepanel.js
+          node --check src/lib/pdf-extractor.js
+          node --check src/lib/markdown-builder.js
+          node --check src/lib/zip.js
+          node --check tests/verify-builder.mjs
+
+      - name: Run synthetic Markdown & ZIP verification suite
+        run: node tests/verify-builder.mjs
